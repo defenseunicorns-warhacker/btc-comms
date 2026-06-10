@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.db
+*.db-wal
+*.db-shm
+keys/
+*.pem
+*.pub
+.env
+.ddil_buffer_*

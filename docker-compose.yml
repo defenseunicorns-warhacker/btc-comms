@@ -1,0 +1,18 @@
+services:
+  accountability-layer:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ledger-data:/data
+    environment:
+      DEMO_MODE: "true"
+      MOCK_ANCHOR: "true"
+      MOCK_CONFIRM_DELAY: "30"   # seconds until anchor "confirms" locally
+      STAMP_INTERVAL: "20"        # stamp the head every 20s
+      UPGRADE_INTERVAL: "10"      # check for confirmation every 10s
+      DB_PATH: /data/ledger.db
+    restart: unless-stopped
+
+volumes:
+  ledger-data:
