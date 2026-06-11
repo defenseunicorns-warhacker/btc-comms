@@ -56,11 +56,13 @@ class LedgerClient:
                  source_id: str = "unknown",
                  timeout: int = 5,
                  async_mode: bool = True,
-                 buffer_path: Optional[str] = None):
+                 buffer_path: Optional[str] = None,
+                 heartbeat_interval: float = 0.0):
         self.base_url = base_url.rstrip("/")
         self.source_id = source_id
         self.timeout = timeout
         self._async = async_mode
+        self._heartbeat_interval = heartbeat_interval
 
         # Per-agent signing key
         self._private_key = None
@@ -91,6 +93,14 @@ class LedgerClient:
                 target=self._drain_loop, daemon=True, name=f"ledger-{source_id}"
             )
             self._worker.start()
+
+        # Optional connectivity heartbeat: report buffered-event count to the
+        # recorder so a dashboard can show this agent's DDIL state in real time.
+        if heartbeat_interval > 0:
+            self._hb = threading.Thread(
+                target=self._heartbeat_loop, daemon=True, name=f"hb-{source_id}"
+            )
+            self._hb.start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -151,15 +161,31 @@ class LedgerClient:
         return body
 
     def _post(self, body: dict) -> dict:
+        return self._post_json("/events", body)
+
+    def _post_json(self, path: str, body: dict) -> dict:
         data = json.dumps(body).encode()
         req = urllib.request.Request(
-            f"{self.base_url}/events",
+            f"{self.base_url}{path}",
             data=data,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             return json.loads(resp.read())
+
+    def _heartbeat_loop(self):
+        """Report buffered-event count to the recorder on a fixed interval."""
+        while True:
+            try:
+                self._post_json("/agent/heartbeat", {
+                    "source_id": self.source_id,
+                    "buffered": self.buffered_count(),
+                    "key_id": self._key_id,
+                })
+            except Exception:
+                pass  # recorder unreachable — nothing to report; try again next tick
+            time.sleep(self._heartbeat_interval)
 
     def _buffer_locally(self, body: dict):
         """Persist to local SQLite so no event is lost during outages."""

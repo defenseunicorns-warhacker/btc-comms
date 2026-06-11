@@ -41,7 +41,7 @@ from anchor import AnchorLoop, _stamp_mock, _upgrade_mock
 import mmr as _mmr
 from roe_schema import validate_roe_payload
 try:
-    from signing import verify_signature, get_public_key, list_keys
+    from signing import verify_signature, get_public_key, list_keys, get_or_create_keypair, sign
     _SIGNING_AVAILABLE = True
 except ImportError:
     _SIGNING_AVAILABLE = False
@@ -74,6 +74,8 @@ API_TOKEN = os.getenv("API_TOKEN", "").strip()
 store: LedgerStore
 anchor_loop: AnchorLoop
 _sse_queues: list[asyncio.Queue] = []
+# Latest DDIL connectivity heartbeat per agent (in-memory telemetry, not ledger state).
+_agent_status: dict[str, dict] = {}
 
 
 def _require_auth(request: Request):
@@ -167,6 +169,18 @@ async def root():
     if os.path.isfile(index):
         return FileResponse(index)
     return {"status": "ok", "demo_mode": DEMO_MODE, "mock_anchor": MOCK_ANCHOR}
+
+
+@app.get("/info")
+async def info():
+    """Runtime config for the dashboard (JSON). `/` serves the HTML dashboard,
+    so the front-end reads its feature flags from here, not from `/`."""
+    return {
+        "status": "ok",
+        "demo_mode": DEMO_MODE,
+        "mock_anchor": MOCK_ANCHOR,
+        "strict_signing": STRICT_SIGNING,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +329,7 @@ async def event_stream(request: Request):
             yield {"event": "snapshot", "data": json.dumps({
                 "entries": [_sanitize(e) for e in store.get_all_entries()],
                 "anchors": [_anchor_out(a) for a in store.get_all_anchors()],
+                "agents": list(_agent_status.values()),
             })}
 
             while True:
@@ -329,6 +344,37 @@ async def event_stream(request: Request):
             _sse_queues.remove(queue)
 
     return EventSourceResponse(generator())
+
+
+# ---------------------------------------------------------------------------
+# Agent connectivity (DDIL telemetry — separate from the ledger)
+# ---------------------------------------------------------------------------
+
+class AgentHeartbeat(BaseModel):
+    source_id: str
+    buffered: int = 0
+    key_id: str | None = None
+
+
+@app.post("/agent/heartbeat")
+async def agent_heartbeat(hb: AgentHeartbeat):
+    """Agents report their local DDIL buffer depth so the dashboard can show
+    connectivity in real time. In-memory telemetry only — never touches the ledger."""
+    import time as _t
+    status = {
+        "source_id": hb.source_id,
+        "buffered": max(0, hb.buffered),
+        "key_id": hb.key_id,
+        "ts": _t.time(),
+    }
+    _agent_status[hb.source_id] = status
+    _broadcast({"type": "agent_status", "data": status})
+    return {"ok": True}
+
+
+@app.get("/agent/status")
+async def agent_status():
+    return list(_agent_status.values())
 
 
 # ---------------------------------------------------------------------------
@@ -403,14 +449,54 @@ async def seed_events(request: Request, n: int = 10):
     ]
     import random
     random.seed(42)
+    # Per-agent signing so the demo's primary populate path exercises the real
+    # Ed25519 attribution flow (otherwise seeded entries show as unsigned).
+    from ledger import canonical_json
     results = []
     for i in range(n):
         agent = agents[i % len(agents)]
         payload = actions[i % len(actions)]
-        entry = store.append(agent, payload)
+        signature = key_id = None
+        if _SIGNING_AVAILABLE:
+            priv, key_id = get_or_create_keypair(agent)
+            signature = sign(priv, agent, canonical_json(payload))
+        entry = store.append(agent, payload, signature=signature, key_id=key_id)
         _broadcast({"type": "entry", "data": _sanitize(entry)})
         results.append({"seq": entry["seq"], "source_id": agent})
     return {"seeded": len(results), "entries": results}
+
+
+@app.post("/demo/impersonate")
+async def demo_impersonate(request: Request):
+    """DEMO ONLY — attempt a forged-attribution event and show it rejected.
+
+    Signs a payload AS the victim using the attacker's own enrolled key, then runs
+    the exact check the /events ingest path runs (verify_signature). The registry
+    binds key→identity, so a key enrolled to one agent cannot sign as another."""
+    _require_auth(request)
+    if not DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled outside DEMO_MODE")
+    if not _SIGNING_AVAILABLE:
+        return {"available": False, "rejected": False, "reason": "Signing module unavailable"}
+    from ledger import canonical_json
+    attacker_sid, victim_sid = "nav-planner", "threat-classifier"
+    attacker_priv, attacker_kid = get_or_create_keypair(attacker_sid)
+    get_or_create_keypair(victim_sid)  # ensure victim is a real enrolled identity
+    payload = {"event_type": "roe_decision", "final_action": "ENGAGE",
+               "human_authorized": True, "note": "forged by adversary"}
+    canonical = canonical_json(payload)
+    # Forge: sign the message AS the victim, using the attacker's key.
+    forged_sig = sign(attacker_priv, victim_sid, canonical)
+    # The real ingest check — returns False because the key isn't enrolled to the victim.
+    accepted = verify_signature(forged_sig, attacker_kid, victim_sid, canonical)
+    return {
+        "available": True,
+        "attacker": attacker_sid,
+        "victim": victim_sid,
+        "attacker_key": attacker_kid,
+        "rejected": not accepted,
+        "reason": f"A key enrolled to '{attacker_sid}' cannot sign as '{victim_sid}'.",
+    }
 
 
 # ---------------------------------------------------------------------------

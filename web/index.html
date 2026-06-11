@@ -108,6 +108,12 @@
       margin-top: 1px;
     }
     .entry-row.genesis .source { color: var(--purple); }
+    .entry-desc { color: var(--text); font-size: 12px; line-height: 1.35; }
+    .entry-meta { display: flex; align-items: center; gap: 8px; margin-top: 2px; flex-wrap: wrap; }
+    .sig { font-size: 9px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; }
+    .sig-ok   { background: rgba(63,185,80,0.14);  color: var(--green);  border: 1px solid rgba(63,185,80,0.35); }
+    .sig-none { background: rgba(210,153,34,0.12); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+    .sig-sys  { background: var(--bg3); color: var(--muted); border: 1px solid var(--border); }
 
     /* Anchor rows */
     .anchor-row {
@@ -215,6 +221,40 @@
 
     .empty-state { padding: 20px; color: var(--muted); font-size: 12px; text-align: center; }
 
+    /* Agent connectivity strip (DDIL) */
+    .agent-strip {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 7px 20px; background: var(--bg2);
+      border-bottom: 1px solid var(--border); font-size: 11px;
+    }
+    .agent-strip .strip-label { color: var(--muted); text-transform: uppercase; letter-spacing: 1px; font-size: 10px; }
+    .agent-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 12px; padding: 2px 9px;
+    }
+    .agent-chip .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .agent-chip.live     .dot { background: var(--green); box-shadow: 0 0 5px var(--green); }
+    .agent-chip.buffering .dot { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: pulse 1.2s infinite; }
+    .agent-chip.stale    .dot { background: var(--muted); }
+    .agent-chip .a-name { color: var(--text); }
+    .agent-chip .a-state { color: var(--muted); }
+    .agent-chip.buffering .a-state { color: var(--yellow); font-weight: 600; }
+    .agent-chip.live .a-state { color: var(--green); }
+
+    /* Toasts */
+    #toastWrap { position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      z-index: 2000; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+    .toast { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 12px 16px; font-size: 12px; max-width: 540px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.5); animation: nodeAppear 0.25s ease; }
+    .toast.blocked { border-color: var(--red); border-left: 4px solid var(--red); }
+    .toast.ok { border-color: var(--green); border-left: 4px solid var(--green); }
+    .toast .t-title { font-weight: 700; }
+    .toast.blocked .t-title { color: var(--red); }
+    .toast.ok .t-title { color: var(--green); }
+    .toast .t-body { color: var(--text); margin-top: 4px; font-weight: 400; opacity: 0.9; line-height: 1.5; }
+
     /* ── Proof animation ── */
     @keyframes nodeAppear {
       from { opacity: 0; transform: scale(0.82); }
@@ -236,6 +276,8 @@
 </head>
 <body>
 
+<div id="toastWrap"></div>
+
 <header>
   <div class="conn-indicator" id="connDot"></div>
   <h1>Immutable Accountability Layer</h1>
@@ -249,6 +291,11 @@
   <span id="verifyIcon">⬤</span>
   <span id="verifyStatus">Waiting for first verification…</span>
   <span class="verify-detail" id="verifyDetail"></span>
+</div>
+
+<div class="agent-strip" id="agentStrip" style="display:none">
+  <span class="strip-label">Agents</span>
+  <span id="agentChips"></span>
 </div>
 
 <div class="main">
@@ -323,6 +370,16 @@
         </div>
       </div>
 
+      <!-- Impersonation (demo) -->
+      <div class="section-group" id="impersonatePanel">
+        <div class="section-label" style="color:var(--orange)">Impersonation (Demo Only)</div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.5">
+          One agent's key tries to sign an event as another agent.
+          Attribution is cryptographic, not a label.
+        </div>
+        <button class="btn btn-blue" style="background:rgba(255,166,87,0.13);color:var(--orange);border-color:rgba(255,166,87,0.4)" onclick="doImpersonate()">🎭 Attempt impersonation</button>
+      </div>
+
     </div>
 
     <!-- Verify result detail -->
@@ -342,6 +399,9 @@
   let anchoredThrough = null;
   let eventSource = null;
   let reconnectTimer = null;
+  let agents = {};        // source_id -> {source_id, buffered, key_id}
+  let agentSeen = {};     // source_id -> browser timestamp of last heartbeat
+  const AGENT_STALE_MS = 7000;
 
   // -----------------------------------------------------------------------
   // SSE connection
@@ -361,8 +421,17 @@
       const data = JSON.parse(e.data);
       entries = data.entries || [];
       anchors = data.anchors || [];
+      (data.agents || []).forEach(a => { agents[a.source_id] = a; agentSeen[a.source_id] = Date.now(); });
       renderEntries();
       renderAnchors();
+      renderAgents();
+    });
+
+    eventSource.addEventListener('agent_status', e => {
+      const a = JSON.parse(e.data);
+      agents[a.source_id] = a;
+      agentSeen[a.source_id] = Date.now();
+      renderAgents();
     });
 
     eventSource.addEventListener('entry', e => {
@@ -405,6 +474,52 @@
   // Rendering
   // -----------------------------------------------------------------------
 
+  // Translate a raw payload into one plain-English line a non-engineer can read.
+  function pct(x) { return x == null ? '?' : Math.round(x * 100) + '%'; }
+  function humanize(e) {
+    if (e.seq === 0) return 'Ledger genesis — start of the chain';
+    const p = e.payload;
+    if (typeof p !== 'object' || p === null) return String(p).slice(0, 70);
+    const t = p.type || p.event_type || p.event || p.action;
+    switch (t) {
+      case 'llm_turn': {
+        const q = String(p.prompt ?? '').slice(0, 48);
+        const a = String(p.response ?? '').slice(0, 56);
+        const m = p.model ? ` [${p.model}]` : '';
+        return `🤖 AI turn${m} — “${q}${(p.prompt||'').length>48?'…':''}” → “${a}${(p.response||'').length>56?'…':''}”`;
+      }
+      case 'file_created':         return `📄 Created file ${p.path ?? '?'} — ${p.size_bytes ?? '?'} bytes (content hashed)`;
+      case 'file_modified':        return `✏️ Modified file ${p.path ?? '?'} — now ${p.size_bytes ?? '?'} bytes`;
+      case 'file_deleted':         return `🗑️ Deleted file ${p.path ?? '?'}${p.note === 'self_wipe_attempt' ? ' (agent tried to wipe it — record stands)' : ''}`;
+      case 'route_computed':       return `Navigation route computed — ${p.waypoints ?? '?'} waypoints, fuel ${p.fuel_pct ?? '?'}%`;
+      case 'threat_detected':      return `Threat detected: ${p.class ?? '?'} at bearing ${p.bearing ?? '?'}° — confidence ${pct(p.confidence)}`;
+      case 'comms_relay':          return `Comms relayed on ${p.freq_mhz ?? '?'} MHz${p.encrypted ? ' (encrypted)' : ''}`;
+      case 'supply_request':       return `Supply request: ${p.qty ?? '?'}× ${p.item ?? 'item'} — ${p.priority ?? ''} priority`;
+      case 'sensor_ping':          return `Sensor ${p.sensor_id ?? ''} ping — azimuth ${p.azimuth ?? '?'}°`;
+      case 'decision_log':         return `Decision: ${p.action ?? '?'} — ${p.authority ?? 'unknown authority'}`;
+      case 'position_report':      return `Position report (${p.lat ?? '?'}, ${p.lon ?? '?'})`;
+      case 'comms_blackout':       return `Comms blackout ${p.duration_s ?? '?'}s — ${p.reason ?? ''}`;
+      case 'target_acquired':      return `Target acquired: ${p.target_id ?? '?'} — confidence ${pct(p.confidence)}`;
+      case 'mission_phase_change': return `Mission phase: ${p.from ?? '?'} → ${p.to ?? '?'}`;
+      case 'roe_decision':         return `ROE decision: ${p.final_action ?? p.decision_type ?? '?'}` +
+                                          (p.human_authorized === false ? ' — UNATTENDED (no human)' :
+                                           p.human_authorized ? ` — human authorized (${p.operator_id ?? '?'})` : '');
+      case 'log_record':           return `Log [${p.level ?? '?'}]: ${String(p.message ?? '').slice(0, 70)}`;
+      case 'TAMPERED':             return '⚠ FORGED CONTENT — injected by adversary';
+      default:                     return t ? String(t) : JSON.stringify(p).slice(0, 70);
+    }
+  }
+
+  // Show whether the record carries a verified cryptographic signature.
+  function signedBadge(e) {
+    if (e.seq === 0) return `<span class="sig sig-sys" title="System genesis entry — no agent signs the chain start">system</span>`;
+    if (e.signature && e.key_id) {
+      const kid = String(e.key_id).slice(0, 8);
+      return `<span class="sig sig-ok" title="Cryptographically signed by ${escHtml(e.source_id)} (key ${escHtml(e.key_id)}). A key enrolled to another agent cannot sign as this one.">✓ signed · ${escHtml(e.source_id)} · key ${kid}…</span>`;
+    }
+    return `<span class="sig sig-none" title="No signature — attribution is a plain string, not cryptographically proven">unsigned</span>`;
+  }
+
   function renderEntries() {
     const list = document.getElementById('entryList');
     document.getElementById('entryCount').textContent = entries.length;
@@ -418,20 +533,19 @@
       const isTampered = brokenSeqs.has(e.seq);
       const isGenesis = e.seq === 0;
       const cls = isTampered ? 'tampered' : (isGenesis ? 'genesis' : '');
-      const payloadType = typeof e.payload === 'object'
-        ? (e.payload.type || e.payload.action || JSON.stringify(e.payload).slice(0, 40))
-        : String(e.payload).slice(0, 40);
       const ts = e.timestamp ? e.timestamp.replace('T',' ').replace('.000Z','').replace('Z','') : '';
       const hashShort = e.entry_hash ? e.entry_hash.slice(0,8)+'…'+e.entry_hash.slice(-8) : '';
       const anchorMark = anchoredThrough != null && e.seq <= anchoredThrough ? '⚓' : '';
       return `
-        <div class="entry-row ${cls}" onclick="clickEntry(${e.seq})" title="Click to view MMR proof">
+        <div class="entry-row ${cls}" onclick="clickEntry(${e.seq})" title="Click to verify this record is authentic">
           <span class="seq">#${e.seq} ${anchorMark}</span>
           <div>
-            <span class="source">${escHtml(e.source_id)}</span>
-            <span class="payload-type"> · ${escHtml(String(payloadType))}</span>
-            <span class="hash-pill">${hashShort}</span>
-            <span class="proof-hint">◈ click to verify</span>
+            <span class="entry-desc">${escHtml(humanize(e))}</span>
+            <div class="entry-meta">
+              ${signedBadge(e)}
+              <span class="hash-pill">${hashShort}</span>
+              <span class="proof-hint">◈ click to verify</span>
+            </div>
           </div>
           <span class="ts-cell">${ts}</span>
         </div>`;
@@ -477,6 +591,29 @@
     renderEntries(); // refresh anchor marks
   }
 
+  function renderAgents() {
+    const strip = document.getElementById('agentStrip');
+    const box = document.getElementById('agentChips');
+    const ids = Object.keys(agents);
+    if (!ids.length) { strip.style.display = 'none'; return; }
+    strip.style.display = '';
+    const now = Date.now();
+    box.innerHTML = ids.sort().map(id => {
+      const a = agents[id];
+      const stale = (now - (agentSeen[id] || 0)) > AGENT_STALE_MS;
+      const buffered = a.buffered || 0;
+      let cls, state;
+      if (stale)         { cls = 'stale';     state = 'offline'; }
+      else if (buffered) { cls = 'buffering'; state = `⚠ ${buffered} buffered (DDIL)`; }
+      else               { cls = 'live';      state = '✓ live'; }
+      return `<span class="agent-chip ${cls}" title="${escHtml(id)}${a.key_id ? ' · key '+escHtml(a.key_id.slice(0,8)) : ''}">
+        <span class="dot"></span>
+        <span class="a-name">${escHtml(id)}</span>
+        <span class="a-state">${state}</span>
+      </span>`;
+    }).join('');
+  }
+
   function updateVerifyBanner(result) {
     const banner = document.getElementById('verifyBanner');
     const icon = document.getElementById('verifyIcon');
@@ -486,16 +623,16 @@
     if (result.ok) {
       banner.className = 'verify-banner ok';
       icon.textContent = '●';
-      status.textContent = `CHAIN INTACT — ${result.verified_entries} entries verified`;
+      status.textContent = `✓ All ${result.verified_entries} records are authentic and unaltered`;
       const ext = result.externally_anchored_through != null
-        ? `Bitcoin-proven through seq ${result.externally_anchored_through}`
-        : 'No confirmed Bitcoin anchor yet (may be pending)';
+        ? `Locked into Bitcoin through record #${result.externally_anchored_through} — irreversible by anyone, including us.`
+        : 'Tamper-evident now; Bitcoin anchor pending confirmation.';
       detail.textContent = ext;
     } else {
       banner.className = 'verify-banner broken';
       icon.textContent = '✖';
-      status.textContent = `CHAIN BROKEN at seq=${result.broken_at}`;
-      detail.textContent = result.reason || '';
+      status.textContent = `✗ Record #${result.broken_at} was altered — and we caught exactly which one`;
+      detail.textContent = `${result.reason || 'integrity check failed'}. Changing one record breaks every hash after it, so tampering can't hide.`;
     }
   }
 
@@ -748,11 +885,18 @@
         ? `<span style="color:var(--red)">Root MISMATCH vs anchor ✖</span>`
         : `<span style="color:var(--yellow)">No confirmed anchor yet</span>`;
 
+    const plain = valid
+      ? `<strong style="color:var(--text)">Record #${entry.seq} is authentic and has not been changed.</strong>
+         You can prove this one record to an investigator — hand them just this entry, a short proof,
+         and the Bitcoin-anchored fingerprint — <strong style="color:var(--text)">without revealing any other entry</strong>.`
+      : `<strong style="color:var(--text)">Record #${entry.seq} has been altered.</strong>
+         Its fingerprint no longer matches the anchored record, so the tampering is detectable.`;
+
     modal.innerHTML = `
       <div style="width:100%;max-width:660px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
           <span style="font-size:14px;font-weight:700;color:var(--purple);letter-spacing:0.4px">
-            ◈ MMR Inclusion Proof — seq #${entry.seq}
+            ◈ Proof of authenticity — record #${entry.seq}
           </span>
           <button onclick="document.getElementById('proofModal').remove()"
             style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:20px;line-height:1">✕</button>
@@ -760,24 +904,33 @@
 
         <div style="background:${valid?'rgba(63,185,80,0.1)':'rgba(248,81,73,0.1)'};
           border:1px solid ${valid?'rgba(63,185,80,0.4)':'rgba(248,81,73,0.4)'};
-          border-radius:5px;padding:10px 14px;margin-bottom:14px;
-          font-size:12px;font-weight:600;color:${valid?'var(--green)':'var(--red)'};line-height:1.6">
-          ${valid ? '✓ PROOF VALID — entry is authentic and unmodified' : '✖ PROOF INVALID — entry has been tampered'}
-          <div style="font-weight:400;font-size:11px;margin-top:2px;opacity:0.85">
-            ${N} hash steps · ${esc(entry.source_id)} · ${esc(entry.timestamp)} · ${rootOkHtml}
+          border-radius:5px;padding:12px 14px;margin-bottom:14px;
+          font-size:13px;font-weight:600;color:${valid?'var(--green)':'var(--red)'};line-height:1.6">
+          ${valid ? '✓ AUTHENTIC' : '✖ TAMPERED'}
+          <div style="font-weight:400;font-size:12px;margin-top:4px;color:var(--text);opacity:0.92;line-height:1.6">
+            ${plain}
+          </div>
+          <div style="font-weight:400;font-size:11px;margin-top:8px;opacity:0.75">
+            ${esc(entry.source_id)} · ${esc(entry.timestamp)} · ${rootOkHtml}
           </div>
         </div>
 
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:7px;
-          padding:8px;overflow:hidden;margin-bottom:14px">
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;
-            padding:5px 8px 8px;text-align:center">
-            Hash-Chain Proof  ·  leaf → sibling → SHA-256 → … → root
+        <details style="background:var(--bg2);border:1px solid var(--border);border-radius:7px;
+          padding:0;overflow:hidden;margin-bottom:14px">
+          <summary style="cursor:pointer;list-style:none;padding:10px 14px;font-size:11px;
+            color:var(--purple);user-select:none">
+            ▸ Show the cryptographic proof (the math) — ${N} hash step${N===1?'':'s'}
+          </summary>
+          <div style="padding:0 8px 8px">
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;
+              padding:2px 8px 8px;text-align:center">
+              leaf → sibling → SHA-256 → … → root
+            </div>
+            <div style="display:flex;justify-content:center;overflow-x:auto">
+              ${svgBlock}
+            </div>
           </div>
-          <div style="display:flex;justify-content:center;overflow-x:auto">
-            ${svgBlock}
-          </div>
-        </div>
+        </details>
 
         <div style="background:var(--bg2);border:1px solid var(--border);border-radius:5px;
           padding:10px 14px;font-size:11px;color:var(--muted);line-height:1.7">
@@ -788,7 +941,7 @@
             <span style="word-break:break-all"><span style="color:var(--muted)">hash</span>  <span style="color:var(--purple);font-size:10px">${esc(entry.entry_hash.slice(0,20))}…</span></span>
           </div>
           <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px">
-            A verifier needs only <strong style="color:var(--text)">this entry + ${N}-step path + anchored root</strong>
+            A verifier needs only <strong style="color:var(--text)">this entry + ${N}-step path + anchored fingerprint</strong>
             to confirm authenticity. No other records need to be disclosed.
           </div>
         </div>
@@ -796,6 +949,35 @@
 
     document.body.appendChild(modal);
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  }
+
+  function showToast(title, bodyHtml, kind) {
+    const wrap = document.getElementById('toastWrap');
+    const t = document.createElement('div');
+    t.className = 'toast ' + (kind || '');
+    t.innerHTML = `<div class="t-title">${escHtml(title)}</div><div class="t-body">${bodyHtml}</div>`;
+    wrap.appendChild(t);
+    setTimeout(() => {
+      t.style.transition = 'opacity 0.4s';
+      t.style.opacity = '0';
+      setTimeout(() => t.remove(), 400);
+    }, 7000);
+  }
+
+  async function doImpersonate() {
+    const r = await api('POST', '/demo/impersonate').catch(e => { alert(e); return null; });
+    if (!r) return;
+    if (!r.available) {
+      showToast('Signing unavailable', escHtml(r.reason || ''), 'blocked');
+      return;
+    }
+    if (r.rejected) {
+      showToast('✗ Impersonation blocked',
+        `${escHtml(r.reason)} The recorder rejected the forged event at ingest — ` +
+        `attribution is cryptographic, not a string a label can fake.`, 'blocked');
+    } else {
+      showToast('⚠ Impersonation NOT blocked', escHtml(r.reason || 'unexpected result'), 'blocked');
+    }
   }
 
   async function doTamper() {
@@ -822,18 +1004,21 @@
   }
 
   async function init() {
-    const info = await api('GET', '/').catch(() => null);
+    const info = await api('GET', '/info').catch(() => null);
     if (info && info.demo_mode) {
       demoMode = true;
       document.getElementById('demoTag').style.display = '';
     } else {
       document.getElementById('tamperPanel').style.display = 'none';
+      document.getElementById('impersonatePanel').style.display = 'none';
       document.getElementById('seedBtn').style.display = 'none';
     }
     if (info && info.mock_anchor) {
       document.getElementById('mockTag').style.display = '';
     }
     connect();
+    // Re-render agent chips so they flip to "offline" when heartbeats stop.
+    setInterval(renderAgents, 2000);
   }
 
   init();

@@ -34,10 +34,10 @@ LEDGER_URL = os.getenv("LEDGER_URL", "http://localhost:8000")
 # Set up one signed client per logical agent (separate keypairs = separate attribution)
 # ---------------------------------------------------------------------------
 
-threat_client  = LedgerClient(LEDGER_URL, source_id="threat-classifier")
-engage_client  = LedgerClient(LEDGER_URL, source_id="engagement-planner")
-nav_client     = LedgerClient(LEDGER_URL, source_id="nav-planner", async_mode=False)
-sensor_client  = LedgerClient(LEDGER_URL, source_id="sensor-fusion")
+threat_client  = LedgerClient(LEDGER_URL, source_id="threat-classifier", heartbeat_interval=2.0)
+engage_client  = LedgerClient(LEDGER_URL, source_id="engagement-planner", heartbeat_interval=2.0)
+nav_client     = LedgerClient(LEDGER_URL, source_id="nav-planner", async_mode=False, heartbeat_interval=2.0)
+sensor_client  = LedgerClient(LEDGER_URL, source_id="sensor-fusion", heartbeat_interval=2.0)
 
 # ---------------------------------------------------------------------------
 # Integration 1: Python logging handler on the existing logger

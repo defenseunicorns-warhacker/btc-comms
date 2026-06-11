@@ -5,3 +5,7 @@ opentimestamps-client>=0.7
 pycryptodomex>=3.19          # Ed25519 per-agent signing (Cryptodome namespace)
 pytest>=7.4                  # test suite
 httpx>=0.24                  # FastAPI TestClient (integration tests)
+
+# Optional — only for examples/llm_agent.py --live (real Claude responses).
+# The default offline demo path needs none of this, keeping the air-gap footprint minimal.
+# anthropic>=0.40            # `pip install anthropic` + ANTHROPIC_API_KEY for live LLM demo

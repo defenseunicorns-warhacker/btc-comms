@@ -13,3 +13,4 @@ keys/
 .ddil_buffer_*
 zarf-package-*.tar.zst
 *.tar.zst
+examples/agent_workspace/
