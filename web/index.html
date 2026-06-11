@@ -598,125 +598,142 @@
     const root = proof.root;
     const N = path.length;
 
-    // ── SVG layout constants ──────────────────────────────────────────────
-    const W = 600;
-    const STEP_H = 115;   // vertical distance between levels
-    const NODE_W = 230;
-    const NODE_H = 44;
-    const CX = W / 2;
-    const SOFF = 180;     // sibling horizontal offset from center
-    const TOP_PAD = 55;
-    const BOT_PAD = 50;
-    const SVG_H = Math.max(N * STEP_H + TOP_PAD + BOT_PAD + NODE_H, 200);
+    // ── Two-column layout: path nodes always LEFT, siblings always RIGHT ──
+    // This prevents any horizontal overlap regardless of path length.
+    const W     = 560;
+    const MX    = 155;   // main-path column center x
+    const SX    = 415;   // sibling column center x
+    const MNW   = 190;   // main node width  → spans [60,  250]
+    const SNW   = 145;   // sibling width    → spans [342, 488]  gap=92px
+    const NH    = 40;    // node height
+    const SH    = 128;   // vertical step height
+    const TPAD  = 44;
+    const BPAD  = 44 + (anchor ? 32 : 0);
+    const SVG_H = Math.max(N, 1) * SH + TPAD + BPAD + NH;
 
-    // center-y of level i (0=leaf at bottom, N=root at top)
-    const ly = i => SVG_H - BOT_PAD - NODE_H / 2 - i * STEP_H;
+    // y-center of main-path node at depth i (0=leaf at top, N=root at bottom)
+    const ynm  = i => TPAD + NH/2 + i * SH;
+    // y of merge junction between depth i and i+1
+    const ymer = i => ynm(i) + SH * 0.48;
 
-    const th = h => h ? h.slice(0, 9) + '…' + h.slice(-7) : '—';
+    const th  = h => h ? h.slice(0,8) + '…' + h.slice(-6) : '—';
     const esc = s => escHtml(String(s));
 
     const C = {
-      purple: { f: 'rgba(188,140,255,0.15)', s: '#bc8cff', t: '#bc8cff' },
-      blue:   { f: 'rgba(88,166,255,0.12)',  s: '#58a6ff', t: '#58a6ff' },
-      orange: { f: 'rgba(255,166,87,0.15)',  s: '#ffa657', t: '#ffa657' },
-      green:  { f: 'rgba(63,185,80,0.22)',   s: '#3fb950', t: '#3fb950' },
-      red:    { f: 'rgba(248,81,73,0.22)',    s: '#f85149', t: '#f85149' },
+      purple: { f:'rgba(188,140,255,0.15)', s:'#bc8cff', t:'#bc8cff' },
+      blue:   { f:'rgba(88,166,255,0.12)',  s:'#58a6ff', t:'#58a6ff' },
+      orange: { f:'rgba(255,166,87,0.15)',  s:'#ffa657', t:'#ffa657' },
+      green:  { f:'rgba(63,185,80,0.22)',   s:'#3fb950', t:'#3fb950' },
+      red:    { f:'rgba(248,81,73,0.22)',    s:'#f85149', t:'#f85149' },
     };
 
-    function nodeEl(cx, cy, topLbl, hashLbl, col, ms) {
+    function nodeEl(cx, cy, topLbl, hashLbl, col, nw, ms) {
       const c = C[col] || C.blue;
-      const nx = cx - NODE_W/2, ny = cy - NODE_H/2;
-      const anim = `opacity:0;animation:nodeAppear 0.4s ease forwards;animation-delay:${ms}ms`;
-      return `<g style="${anim}">
-        <rect x="${nx}" y="${ny}" width="${NODE_W}" height="${NODE_H}" rx="5"
+      const nx = cx - nw/2, ny = cy - NH/2;
+      return `<g opacity="0" style="animation:nodeAppear 0.38s ease forwards;animation-delay:${ms}ms">
+        <rect x="${nx}" y="${ny}" width="${nw}" height="${NH}" rx="5"
           fill="${c.f}" stroke="${c.s}" stroke-width="1.5"
-          style="filter:drop-shadow(0 0 7px ${c.s}55)"/>
-        <text x="${cx}" y="${ny+13}" text-anchor="middle" font-size="9" fill="${c.t}" opacity="0.7"
+          style="filter:drop-shadow(0 0 6px ${c.s}44)"/>
+        <text x="${cx}" y="${ny+12}" text-anchor="middle" font-size="8.5" fill="${c.t}" opacity="0.72"
           font-family="'SF Mono','Cascadia Code',monospace">${esc(topLbl)}</text>
-        <text x="${cx}" y="${ny+30}" text-anchor="middle" font-size="11.5" font-weight="700"
-          fill="${c.t}" font-family="'SF Mono','Cascadia Code',monospace" letter-spacing="0.3">${esc(hashLbl)}</text>
+        <text x="${cx}" y="${ny+28}" text-anchor="middle" font-size="11" font-weight="700"
+          fill="${c.t}" font-family="'SF Mono','Cascadia Code',monospace" letter-spacing="0.2">${esc(hashLbl)}</text>
       </g>`;
     }
 
     function lineEl(x1, y1, x2, y2, col, ms, dur) {
       const len = Math.hypot(x2-x1, y2-y1).toFixed(1);
-      const stroke = (C[col] || C.blue).s;
       return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
-        stroke="${stroke}" stroke-width="1.5" stroke-linecap="round"
-        stroke-dasharray="${len}" stroke-dashoffset="${len}" opacity="0.65"
+        stroke="${(C[col]||C.orange).s}" stroke-width="1.5" stroke-linecap="round" opacity="0.6"
+        stroke-dasharray="${len}" stroke-dashoffset="${len}"
         style="animation:lineGrow ${dur}ms ease forwards;animation-delay:${ms}ms"/>`;
     }
 
-    function shaTag(cx, cy, ms) {
-      return `<text x="${cx}" y="${cy}" text-anchor="middle" font-size="9" fill="#8b949e" opacity="0"
-        font-family="'SF Mono','Cascadia Code',monospace"
-        style="animation:nodeAppear 0.3s ease forwards;animation-delay:${ms}ms">SHA-256( L ⊕ R )</text>`;
+    function dotEl(cx, cy, col, ms) {
+      const s = (C[col]||C.orange).s;
+      return `<circle cx="${cx}" cy="${cy}" r="4" fill="${s}" opacity="0"
+        style="animation:nodeAppear 0.22s ease forwards;animation-delay:${ms}ms;
+          filter:drop-shadow(0 0 5px ${s})"/>`;
     }
 
-    const PACE = 780; // ms per step
+    function shaEl(cx, cy, ms) {
+      return `<text x="${cx}" y="${cy}" text-anchor="start" font-size="8.5" fill="#8b949e" opacity="0"
+        font-family="'SF Mono','Cascadia Code',monospace"
+        style="animation:nodeAppear 0.28s ease forwards;animation-delay:${ms}ms">SHA-256( L ∥ R )</text>`;
+    }
+
+    const PACE = 820;
     let parts = [];
 
-    // ── Level 0: leaf ────────────────────────────────────────────────────
-    parts.push(nodeEl(CX, ly(0),
-      `LEAF   seq #${entry.seq} · ${esc(entry.source_id)}`,
-      th(leafHash), 'purple', 0));
+    // ── Leaf node (depth 0, top) ──────────────────────────────────────────
+    parts.push(nodeEl(MX, ynm(0),
+      `LEAF  seq #${entry.seq}  ·  ${esc(entry.source_id)}`,
+      th(leafHash), 'purple', MNW, 0));
 
-    // ── Steps 0…N-1 ──────────────────────────────────────────────────────
+    // ── One step per path entry ───────────────────────────────────────────
     for (let i = 0; i < N; i++) {
       const step = path[i];
-      const d0 = (i + 1) * PACE;
-      const currY = ly(i), parentY = ly(i + 1);
-      const sibX = step.side === 'right' ? CX + SOFF : CX - SOFF;
+      const d0   = (i + 1) * PACE;
+      const cy   = ynm(i);       // current node center y
+      const my   = ymer(i);      // merge junction y
+      const oy   = ynm(i + 1);   // output node center y
+      const isLast = i === N - 1;
 
-      // sibling node
-      parts.push(nodeEl(sibX, currY,
-        `SIBLING [${i}]  (${step.side})`,
-        th(step.hash), 'blue', d0));
+      // Sibling: right column, same y as current
+      const sibTopLbl = step.side === 'left'
+        ? `SIBLING [${i}]  ·  left input`
+        : `SIBLING [${i}]  ·  right input`;
+      parts.push(nodeEl(SX, cy, sibTopLbl, th(step.hash), 'blue', SNW, d0));
 
-      // line: current path node → parent
-      parts.push(lineEl(CX, currY - NODE_H/2, CX, parentY + NODE_H/2, 'orange', d0+140, 350));
+      // Vertical line: current node bottom → merge point
+      parts.push(lineEl(MX, cy + NH/2, MX, my, 'orange', d0 + 80, 260));
 
-      // line: sibling → parent
-      const sibEdge = step.side === 'right' ? sibX - NODE_W/2 + 18 : sibX + NODE_W/2 - 18;
-      parts.push(lineEl(sibEdge, currY - NODE_H/2, CX, parentY + NODE_H/2, 'blue', d0+140, 460));
+      // Diagonal arm: sibling inner edge → merge point
+      parts.push(lineEl(SX - SNW/2 - 3, cy, MX + 4, my, 'blue', d0 + 100, 380));
 
-      // SHA-256 label at midpoint
-      parts.push(shaTag(CX + 14, (currY + parentY) / 2 - 2, d0 + 380));
+      // Merge dot at junction
+      parts.push(dotEl(MX, my, 'orange', d0 + 310));
 
-      // output / root node
-      const isRoot = (i === N - 1);
-      const outCol  = isRoot ? (valid ? 'green' : 'red') : 'orange';
-      const outTop  = isRoot
+      // SHA-256 label right of junction
+      parts.push(shaEl(MX + 11, my + 4, d0 + 370));
+
+      // Vertical line: merge point → output node top
+      parts.push(lineEl(MX, my + 5, MX, oy - NH/2, 'orange', d0 + 430, 250));
+
+      // Output / root node
+      const outCol = isLast ? (valid ? 'green' : 'red') : 'orange';
+      const outTop = isLast
         ? `MMR ROOT  ${valid ? '✓ VERIFIED' : '✖ INVALID'}`
-        : `H[${i+1}]`;
-      parts.push(nodeEl(CX, parentY, outTop, th(root), outCol, d0 + 560));
+        : `H[${i+1}]  ·  step ${i+1} of ${N}`;
+      parts.push(nodeEl(MX, oy, outTop, isLast ? th(root) : '…', outCol, MNW, d0 + 600));
     }
 
-    // ── N=0 edge case: leaf IS root ───────────────────────────────────────
+    // ── N=0: single-entry ledger, leaf IS root ────────────────────────────
     if (N === 0) {
-      const outCol = valid ? 'green' : 'red';
-      const rootY = ly(0) - STEP_H;
-      parts.push(lineEl(CX, ly(0) - NODE_H/2, CX, rootY + NODE_H/2, 'orange', 200, 300));
-      parts.push(nodeEl(CX, rootY, `ROOT  ${valid ? '✓' : '✖'}`, th(root), outCol, 500));
+      const oy = ynm(1);
+      parts.push(lineEl(MX, ynm(0) + NH/2, MX, oy - NH/2, 'orange', 220, 270));
+      parts.push(nodeEl(MX, oy, `MMR ROOT  ${valid ? '✓ VERIFIED' : '✖'}`,
+        th(root), valid ? 'green' : 'red', MNW, 500));
     }
 
-    // ── Bitcoin anchor label above root ───────────────────────────────────
-    const anchorDelay = (N + 1) * PACE;
-    const anchorY     = ly(Math.max(N, 1)) - NODE_H / 2 - 18;
+    // ── Bitcoin anchor note below root ────────────────────────────────────
     if (anchor) {
-      const ac = anchor.status === 'confirmed' ? '#3fb950' : '#d29922';
-      const at = anchor.status === 'confirmed'
+      const rootY = ynm(Math.max(N, 1));
+      const ay    = rootY + NH/2 + 22;
+      const ac    = anchor.status === 'confirmed' ? '#3fb950' : '#d29922';
+      const at    = anchor.status === 'confirmed'
         ? `⚓ Bitcoin confirmed · block ${anchor.block_height || '…'}`
         : `⚓ Pending Bitcoin confirmation`;
-      parts.push(`<text x="${CX}" y="${anchorY}" text-anchor="middle" font-size="10.5"
+      const ad = (N + 1) * PACE;
+      parts.push(`<text x="${MX}" y="${ay}" text-anchor="middle" font-size="9.5"
         fill="${ac}" font-weight="700" opacity="0"
         font-family="'SF Mono','Cascadia Code',monospace"
-        style="animation:nodeAppear 0.45s ease forwards,rootGlow 2s ease infinite;animation-delay:${anchorDelay}ms,${anchorDelay}ms">
-        ${esc(at)}</text>`);
+        style="animation:nodeAppear 0.4s ease forwards,rootGlow 2s ease ${ad + 500}ms infinite;
+          animation-delay:${ad}ms">${esc(at)}</text>`);
     }
 
-    const svgBlock = `<svg width="${W}" height="${SVG_H}" xmlns="http://www.w3.org/2000/svg">
-      ${parts.join('\n')}</svg>`;
+    const svgBlock = `<svg width="${W}" height="${SVG_H}" viewBox="0 0 ${W} ${SVG_H}"
+      xmlns="http://www.w3.org/2000/svg">${parts.join('\n')}</svg>`;
 
     // ── Modal shell ───────────────────────────────────────────────────────
     const modal = document.createElement('div');
