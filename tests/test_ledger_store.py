@@ -4,6 +4,8 @@ and that the persisted MMR root matches an independently-recomputed root.
 These exercise the storage layer that the pure-crypto tests don't touch.
 """
 
+import threading
+
 import pytest
 
 
@@ -80,6 +82,56 @@ def test_mmr_nodes_grow_logarithmically(store):
     n = store.leaf_count()
     # An MMR over n leaves has 2n-1 nodes worst case; assert it's not quadratic
     assert node_count < 2 * n, f"{node_count} nodes for {n} leaves looks non-linear"
+
+
+def test_concurrent_writes_and_reads(store):
+    """
+    Regression test for the shared-connection race: the background anchor thread
+    reads (get_head/leaf_count/get_mmr_root/get_all_anchors) while request
+    handlers append. Without serializing all connection access, the interleaved
+    cursor use raises 'NoneType object is not subscriptable' on COUNT(*). This
+    hammers both sides concurrently and asserts no error and a consistent chain.
+    """
+    errors = []
+    stop = threading.Event()
+
+    def writer():
+        try:
+            for i in range(200):
+                store.append("agent-a", {"i": i})
+        except Exception as exc:        # pragma: no cover - only on regression
+            errors.append(("writer", repr(exc)))
+        finally:
+            stop.set()
+
+    def reader():
+        try:
+            while not stop.is_set():
+                store.get_head()
+                store.leaf_count()
+                store.get_mmr_root()
+                store.get_all_entries()
+                store.get_all_anchors()
+        except Exception as exc:        # pragma: no cover - only on regression
+            errors.append(("reader", repr(exc)))
+
+    threads = [threading.Thread(target=writer)] + [threading.Thread(target=reader) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"concurrent access raised: {errors}"
+    assert store.leaf_count() == 201   # genesis + 200
+    # Chain is still internally consistent after the hammering
+    import mmr
+    entries = store.get_all_entries()
+    nodes = {}
+    get = lambda h, s: nodes[(h, s)]
+    set_ = lambda h, s, v: nodes.__setitem__((h, s), v)
+    for e in entries:
+        mmr.append(e["entry_hash"], e["seq"], get, set_)
+    assert mmr.root(201, get) == store.get_mmr_root()
 
 
 def test_reopen_persists_chain(tmp_path):
