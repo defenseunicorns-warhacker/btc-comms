@@ -263,16 +263,39 @@ class LedgerStore:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # Paginated read
+    # ------------------------------------------------------------------
+
+    def get_entries_range(self, limit: int, offset: int) -> list[dict]:
+        """Return up to `limit` entries starting at `offset`, ordered by seq."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM ledger ORDER BY seq ASC LIMIT ? OFFSET ?", (limit, offset)
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
     # DEMO ONLY — direct mutation for the tamper demonstration
     # ------------------------------------------------------------------
 
+    # Explicit SQL statements keyed by field name — avoids dynamic column
+    # interpolation while keeping the allowlist machine-checkable.
+    _TAMPER_SQL: dict = {
+        "payload":      "UPDATE ledger SET payload=? WHERE seq=?",
+        "payload_hash": "UPDATE ledger SET payload_hash=? WHERE seq=?",
+        "entry_hash":   "UPDATE ledger SET entry_hash=? WHERE seq=?",
+        "prev_hash":    "UPDATE ledger SET prev_hash=? WHERE seq=?",
+        "source_id":    "UPDATE ledger SET source_id=? WHERE seq=?",
+        "timestamp":    "UPDATE ledger SET timestamp=? WHERE seq=?",
+    }
+
     def _tamper_entry(self, seq: int, field: str, new_value: str):
         """Directly mutate a stored entry. DEMO USE ONLY."""
-        allowed = {"payload", "payload_hash", "entry_hash", "prev_hash", "source_id", "timestamp"}
-        if field not in allowed:
+        sql = self._TAMPER_SQL.get(field)
+        if sql is None:
             raise ValueError(f"Cannot tamper field: {field}")
         with self._lock:
-            self._conn.execute(f"UPDATE ledger SET {field}=? WHERE seq=?", (new_value, seq))
+            self._conn.execute(sql, (new_value, seq))
             self._conn.commit()
 
     # ------------------------------------------------------------------

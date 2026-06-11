@@ -213,7 +213,6 @@ class LedgerClient:
             ).fetchall()
 
         if not rows:
-            time.sleep(0.5)
             return
 
         delivered = []

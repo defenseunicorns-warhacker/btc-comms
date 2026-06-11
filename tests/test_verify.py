@@ -14,10 +14,6 @@ Covers every broken-entry case the verify() spec requires:
 
 import copy
 import json
-import sys
-import os
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from ledger import LedgerStore, ZERO_HASH, payload_hash, entry_hash, sha256, canonical_json
 from verify import verify, VerifyResult

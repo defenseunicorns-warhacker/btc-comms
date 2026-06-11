@@ -14,9 +14,10 @@ COPY src/ ./src/
 COPY web/ ./web/
 
 ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src \
     DB_PATH=/data/ledger.db \
     STAMP_INTERVAL=30 \
-    UPGRADE_INTERVAL=120 \
+    UPGRADE_INTERVAL=30 \
     DEMO_MODE=false
 
 VOLUME ["/data"]

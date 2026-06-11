@@ -181,7 +181,10 @@ def verify(entries: list[dict], anchors: list[dict],
                     f"but only {len(seqs_covered)} verified entries available"
                 )
             else:
-                # Build an in-memory MMR from verified entry hashes to recompute root
+                # Rebuild MMR from raw entry hashes to prove the stored root is correct.
+                # Intentionally independent from persisted mmr_nodes — we don't trust them.
+                # Complexity: O(n) per anchor → O(n×a) total. Acceptable for audit runs;
+                # not designed for high-frequency polling on very large ledgers.
                 _nodes: dict = {}
                 def _get(h, s): return _nodes[(h, s)]
                 def _set(h, s, v): _nodes[(h, s)] = v

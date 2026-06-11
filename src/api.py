@@ -18,15 +18,18 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-# Make the flat module layout (ledger, verify, anchor, …) importable no matter
-# how the app is launched: `uvicorn src.api:app` from the repo root, `uvicorn
-# api:app` from inside src/, or in the Docker image. Without this, the
-# documented quickstart fails with ModuleNotFoundError: No module named 'ledger'.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Local-dev fallback: add src/ to sys.path when launched via
+# `uvicorn src.api:app` from the project root without PYTHONPATH set.
+# Docker sets PYTHONPATH=/app/src; pyproject.toml handles pytest.
+_src = os.path.dirname(os.path.abspath(__file__))
+if _src not in sys.path:
+    sys.path.insert(0, _src)
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,13 +62,15 @@ DEMO_MODE = _flag("DEMO_MODE")
 MOCK_ANCHOR = _flag("MOCK_ANCHOR")
 DB_PATH = os.getenv("DB_PATH", "ledger.db")
 STAMP_INTERVAL = int(os.getenv("STAMP_INTERVAL", "30"))
-UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "15"))  # check more often in mock mode
+UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "30"))
 
 # Enforcement knobs (off by default so the demo is frictionless).
 #   STRICT_SIGNING=true  → reject any event without a valid registered signature.
 #   API_TOKEN=<secret>   → require Bearer/X-API-Key on all mutating endpoints.
 STRICT_SIGNING = _flag("STRICT_SIGNING")
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
+# Restrict in production: CORS_ORIGINS=https://dashboard.example.com
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",")]
 
 # ---------------------------------------------------------------------------
 # Shared state
@@ -73,6 +78,7 @@ API_TOKEN = os.getenv("API_TOKEN", "").strip()
 
 store: LedgerStore
 anchor_loop: AnchorLoop
+_sse_lock = threading.Lock()
 _sse_queues: list[asyncio.Queue] = []
 # Latest DDIL connectivity heartbeat per agent (in-memory telemetry, not ledger state).
 _agent_status: dict[str, dict] = {}
@@ -100,7 +106,9 @@ def _require_auth(request: Request):
 
 def _broadcast(event: dict):
     """Push an event to all active SSE subscribers."""
-    for q in list(_sse_queues):
+    with _sse_lock:
+        queues = list(_sse_queues)
+    for q in queues:
         try:
             q.put_nowait(event)
         except asyncio.QueueFull:
@@ -152,7 +160,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -256,8 +264,7 @@ async def verify_chain():
 
 @app.get("/entries")
 async def list_entries(limit: int = 200, offset: int = 0):
-    all_entries = store.get_all_entries()
-    page = all_entries[offset: offset + limit]
+    page = store.get_entries_range(min(limit, 1000), offset)
     return [_sanitize(e) for e in page]
 
 
@@ -321,7 +328,8 @@ async def list_anchors():
 @app.get("/stream")
 async def event_stream(request: Request):
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-    _sse_queues.append(queue)
+    with _sse_lock:
+        _sse_queues.append(queue)
 
     async def generator():
         try:
@@ -341,7 +349,11 @@ async def event_stream(request: Request):
                 except asyncio.TimeoutError:
                     yield {"event": "heartbeat", "data": "{}"}
         finally:
-            _sse_queues.remove(queue)
+            with _sse_lock:
+                try:
+                    _sse_queues.remove(queue)
+                except ValueError:
+                    pass
 
     return EventSourceResponse(generator())
 
@@ -360,12 +372,11 @@ class AgentHeartbeat(BaseModel):
 async def agent_heartbeat(hb: AgentHeartbeat):
     """Agents report their local DDIL buffer depth so the dashboard can show
     connectivity in real time. In-memory telemetry only — never touches the ledger."""
-    import time as _t
     status = {
         "source_id": hb.source_id,
         "buffered": max(0, hb.buffered),
         "key_id": hb.key_id,
-        "ts": _t.time(),
+        "ts": time.time(),
     }
     _agent_status[hb.source_id] = status
     _broadcast({"type": "agent_status", "data": status})

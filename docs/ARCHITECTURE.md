@@ -31,6 +31,12 @@ a provisioning authority (CAC/PIV, an enrollment CA, or HSM attestation) so an
 attacker cannot pre-register a victim's `source_id`. The signing/verification
 path is unchanged — only the key-issuance step hardens.
 
+**Registry integrity:** `keys/registry.json` is the trust anchor for key–identity
+binding. In production it must be write-protected at the OS/deployment level
+(read-only mount, file ACL, or replaced by an external PKI/LDAP directory) so an
+attacker who gains filesystem access cannot enrol a new key under an existing
+identity.
+
 ---
 
 ## The two layered guarantees
@@ -166,6 +172,13 @@ ROE rule applied.
 chain internally intact, and how far is it externally proven on Bitcoin? It
 pinpoints the *first* broken entry.
 
+**Complexity note:** for each anchor, `verify()` rebuilds an independent in-memory
+MMR from the raw entry hashes to recompute the stored root — deliberately not
+reusing the persisted `mmr_nodes` table, which is part of what's being verified.
+This is O(n) per anchor, O(n×a) total. It is correct and appropriate for
+on-demand audit runs; it is not designed for high-frequency polling on very large
+ledgers.
+
 ```
 function verify(ledger, anchors):
     # 1. Structural + chain integrity (real-time guarantee)
@@ -253,7 +266,7 @@ See [DEMO.md](DEMO.md) for runnable example apps built on these adapters.
 | `API_TOKEN` | _(unset)_ | When set, mutating endpoints require `Authorization: Bearer <token>` or `X-API-Key` |
 | `DB_PATH` | `ledger.db` | SQLite path |
 | `STAMP_INTERVAL` | `30` | Seconds between anchor stamps |
-| `UPGRADE_INTERVAL` | `30` | Seconds between pending-anchor upgrade checks |
+| `UPGRADE_INTERVAL` | `30` | Seconds between pending-anchor upgrade checks (docker-compose demo uses `10`) |
 
 ---
 
