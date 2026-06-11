@@ -2,3 +2,6 @@ fastapi>=0.100
 uvicorn[standard]>=0.23
 sse-starlette>=1.6
 opentimestamps-client>=0.7
+pycryptodomex>=3.19          # Ed25519 per-agent signing (Cryptodome namespace)
+pytest>=7.4                  # test suite
+httpx>=0.24                  # FastAPI TestClient (integration tests)

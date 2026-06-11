@@ -17,9 +17,16 @@ import asyncio
 import json
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator
+
+# Make the flat module layout (ledger, verify, anchor, …) importable no matter
+# how the app is launched: `uvicorn src.api:app` from the repo root, `uvicorn
+# api:app` from inside src/, or in the Docker image. Without this, the
+# documented quickstart fails with ModuleNotFoundError: No module named 'ledger'.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,11 +52,20 @@ log = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() in ("true", "1", "yes")
-MOCK_ANCHOR = os.getenv("MOCK_ANCHOR", "false").lower() in ("true", "1", "yes")
+def _flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).lower() in ("true", "1", "yes")
+
+DEMO_MODE = _flag("DEMO_MODE")
+MOCK_ANCHOR = _flag("MOCK_ANCHOR")
 DB_PATH = os.getenv("DB_PATH", "ledger.db")
 STAMP_INTERVAL = int(os.getenv("STAMP_INTERVAL", "30"))
 UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "15"))  # check more often in mock mode
+
+# Enforcement knobs (off by default so the demo is frictionless).
+#   STRICT_SIGNING=true  → reject any event without a valid registered signature.
+#   API_TOKEN=<secret>   → require Bearer/X-API-Key on all mutating endpoints.
+STRICT_SIGNING = _flag("STRICT_SIGNING")
+API_TOKEN = os.getenv("API_TOKEN", "").strip()
 
 # ---------------------------------------------------------------------------
 # Shared state
@@ -58,6 +74,26 @@ UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "15"))  # check more often 
 store: LedgerStore
 anchor_loop: AnchorLoop
 _sse_queues: list[asyncio.Queue] = []
+
+
+def _require_auth(request: Request):
+    """
+    Gate mutating endpoints behind a shared token when API_TOKEN is set.
+    Accepts either `Authorization: Bearer <token>` or `X-API-Key: <token>`.
+    No-op when API_TOKEN is unset (demo default).
+    """
+    if not API_TOKEN:
+        return
+    header = request.headers.get("authorization", "")
+    presented = ""
+    if header.lower().startswith("bearer "):
+        presented = header[7:].strip()
+    if not presented:
+        presented = request.headers.get("x-api-key", "").strip()
+    # Constant-time compare to avoid token-length/timing leakage
+    import hmac
+    if not presented or not hmac.compare_digest(presented, API_TOKEN):
+        raise HTTPException(status_code=401, detail="Missing or invalid API token")
 
 
 def _broadcast(event: dict):
@@ -145,7 +181,19 @@ class EventRequest(BaseModel):
 
 
 @app.post("/events", status_code=201)
-async def append_event(req: EventRequest):
+async def append_event(req: EventRequest, request: Request):
+    _require_auth(request)
+
+    # Strict mode: every event MUST carry a valid, registered signature.
+    if STRICT_SIGNING:
+        if not _SIGNING_AVAILABLE:
+            raise HTTPException(status_code=503, detail="STRICT_SIGNING set but signing module unavailable")
+        if not (req.signature and req.key_id):
+            raise HTTPException(status_code=403, detail=(
+                "STRICT_SIGNING enabled — unsigned events are rejected. "
+                "Provide signature + key_id."
+            ))
+
     # Verify signature at ingest if provided — reject forged attribution
     if req.signature and req.key_id and _SIGNING_AVAILABLE:
         from ledger import canonical_json
@@ -288,7 +336,8 @@ async def event_stream(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.post("/anchor/now")
-async def anchor_now():
+async def anchor_now(request: Request):
+    _require_auth(request)
     result = anchor_loop.stamp_now()
     if result is None:
         head = store.get_head()
@@ -298,7 +347,8 @@ async def anchor_now():
 
 
 @app.post("/anchor/upgrade")
-async def upgrade_anchors():
+async def upgrade_anchors(request: Request):
+    _require_auth(request)
     anchor_loop.upgrade_now()
     return {"message": "Upgrade pass triggered"}
 
@@ -314,7 +364,8 @@ class TamperRequest(BaseModel):
 
 
 @app.post("/tamper")
-async def tamper(req: TamperRequest):
+async def tamper(req: TamperRequest, request: Request):
+    _require_auth(request)
     if not DEMO_MODE:
         raise HTTPException(
             status_code=403,
@@ -333,7 +384,8 @@ async def tamper(req: TamperRequest):
 
 
 @app.post("/seed")
-async def seed_events(n: int = 10):
+async def seed_events(request: Request, n: int = 10):
+    _require_auth(request)
     if not DEMO_MODE:
         raise HTTPException(status_code=403, detail="Seed endpoint disabled outside DEMO_MODE")
     agents = ["nav-planner", "threat-classifier", "comms-router", "logistics-ai", "sensor-fusion"]

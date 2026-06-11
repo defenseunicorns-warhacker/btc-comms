@@ -120,11 +120,21 @@ def verify_signature(signature_hex: str, key_id: str,
     Verify that signature_hex is a valid Ed25519 signature over
     (source_id + payload_canonical) by the key registered as key_id.
     Returns False (not raises) on any failure.
+
+    Identity binding: the key_id must be registered to *this* source_id.
+    Without this check an attacker could enrol their own key under any
+    source_id and sign "victim:payload" — the math would verify but the
+    attribution would be forged. The registry is the trust anchor.
     """
-    public_key = get_public_key(key_id)
-    if public_key is None:
+    registry = _load_registry()
+    entry = registry.get(key_id)
+    if entry is None:
+        return False
+    if entry.get("source_id") != source_id:
+        # Key is registered to a different identity — reject (anti-impersonation)
         return False
     try:
+        public_key = ECC.import_key(entry["public_key_pem"])
         message = source_id.encode("utf-8") + b":" + payload_canonical
         sig_bytes = bytes.fromhex(signature_hex)
         verifier = eddsa.new(public_key, "rfc8032")

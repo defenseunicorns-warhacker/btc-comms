@@ -1,0 +1,12 @@
+kind: UDSBundle
+metadata:
+  name: stable
+  description: "STABLE accountability layer — UDS bundle for air-gapped mission delivery"
+  version: 0.1.0
+  architecture: amd64
+
+packages:
+  # The STABLE Zarf package (built locally from ./zarf.yaml).
+  - name: stable
+    path: .
+    ref: 0.1.0

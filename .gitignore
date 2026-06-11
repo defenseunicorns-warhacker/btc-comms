@@ -11,3 +11,5 @@ keys/
 *.pub
 .env
 .ddil_buffer_*
+zarf-package-*.tar.zst
+*.tar.zst

@@ -51,7 +51,13 @@ ZERO_HASH = "0" * 64
 class LedgerStore:
     def __init__(self, db_path: str = "ledger.db"):
         self._db_path = db_path
-        self._lock = threading.Lock()
+        # Reentrant: a single shared connection is used from request handlers
+        # AND the background anchor thread. Every method that touches the
+        # connection holds this lock, so reads can't interleave with a writer's
+        # cursor (which otherwise corrupts results, e.g. COUNT(*) -> no row).
+        # RLock allows locked methods to call other locked methods (e.g.
+        # get_mmr_root -> leaf_count) without deadlocking.
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
@@ -159,41 +165,48 @@ class LedgerStore:
                 self._conn.commit()
 
     def get_all_entries(self) -> list[dict]:
-        rows = self._conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     def get_entries_up_to(self, head_seq: int) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM ledger WHERE seq <= ? ORDER BY seq ASC", (head_seq,)
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM ledger WHERE seq <= ? ORDER BY seq ASC", (head_seq,)
+            ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
     def get_entry(self, seq: int) -> Optional[dict]:
-        row = self._conn.execute("SELECT * FROM ledger WHERE seq=?", (seq,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM ledger WHERE seq=?", (seq,)).fetchone()
         return self._row_to_dict(row) if row else None
 
     def get_head(self) -> Optional[dict]:
-        row = self._conn.execute(
-            "SELECT * FROM ledger ORDER BY seq DESC LIMIT 1"
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM ledger ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
         return self._row_to_dict(row) if row else None
 
     def leaf_count(self) -> int:
         """Number of entries in the ledger = number of MMR leaves."""
-        row = self._conn.execute("SELECT COUNT(*) FROM ledger").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) FROM ledger").fetchone()
         return row[0] if row else 0
 
     def get_mmr_root(self) -> Optional[str]:
         """Current MMR root over all entries."""
-        n = self.leaf_count()
-        if n == 0:
-            return None
-        return _mmr.root(n, self._get_mmr_node)
+        with self._lock:
+            n = self.leaf_count()
+            if n == 0:
+                return None
+            return _mmr.root(n, self._get_mmr_node)
 
     def get_mmr_inclusion_proof(self, seq: int) -> dict:
         """Build an MMR inclusion proof for entry at seq."""
-        n = self.leaf_count()
-        return _mmr.inclusion_proof(seq, n, self._get_mmr_node)
+        with self._lock:
+            n = self.leaf_count()
+            return _mmr.inclusion_proof(seq, n, self._get_mmr_node)
 
     # ------------------------------------------------------------------
     # MMR node storage
@@ -238,13 +251,15 @@ class LedgerStore:
             self._conn.commit()
 
     def get_all_anchors(self) -> list[dict]:
-        rows = self._conn.execute("SELECT * FROM anchors ORDER BY head_seq ASC").fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM anchors ORDER BY head_seq ASC").fetchall()
         return [dict(r) for r in rows]
 
     def get_pending_anchors(self) -> list[dict]:
-        rows = self._conn.execute(
-            "SELECT * FROM anchors WHERE status='pending' ORDER BY head_seq ASC"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM anchors WHERE status='pending' ORDER BY head_seq ASC"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
@@ -256,8 +271,9 @@ class LedgerStore:
         allowed = {"payload", "payload_hash", "entry_hash", "prev_hash", "source_id", "timestamp"}
         if field not in allowed:
             raise ValueError(f"Cannot tamper field: {field}")
-        self._conn.execute(f"UPDATE ledger SET {field}=? WHERE seq=?", (new_value, seq))
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(f"UPDATE ledger SET {field}=? WHERE seq=?", (new_value, seq))
+            self._conn.commit()
 
     # ------------------------------------------------------------------
     # Helpers
