@@ -729,7 +729,13 @@
     const existing = document.getElementById('proofModal');
     if (existing) existing.remove();
 
-    const { entry, proof, anchor, valid, root_matches_anchor: rootOk } = result;
+    const { entry, proof, anchor, valid, root_matches_anchor: rootOk,
+            payload_hash_ok: phOk, entry_hash_ok: ehOk, mmr_inclusion_ok: mOk } = result;
+
+    // Backward-compat: old server responses won't have these three fields.
+    // When absent, treat them as passing so existing behaviour is unchanged.
+    const leafOk = (phOk !== false) && (ehOk !== false);
+
     const path = proof.path;
     const leafHash = proof.leaf_hash;
     const root = proof.root;
@@ -764,6 +770,18 @@
       red:    { f:'rgba(248,81,73,0.22)',    s:'#f85149', t:'#f85149' },
     };
 
+    // ── Colors for leaf and path nodes ────────────────────────────────────
+    // If the leaf content is bad, every node above it is also invalid — the
+    // break propagates visually from leaf to root.
+    const leafCol      = leafOk ? 'purple' : 'red';
+    const leafTopLabel = leafOk
+      ? `LEAF  seq #${entry.seq}  ·  ${esc(entry.source_id)}`
+      : phOk === false
+        ? `LEAF ✖  seq #${entry.seq}  ·  payload altered`
+        : `LEAF ✖  seq #${entry.seq}  ·  entry hash mismatch`;
+    // Once the leaf is broken all lines and intermediate nodes are red too.
+    const chainCol = leafOk ? 'orange' : 'red';
+
     function nodeEl(cx, cy, topLbl, hashLbl, col, nw, ms) {
       const c = C[col] || C.blue;
       const nx = cx - nw/2, ny = cy - NH/2;
@@ -793,19 +811,30 @@
           filter:drop-shadow(0 0 5px ${s})"/>`;
     }
 
-    function shaEl(cx, cy, ms) {
-      return `<text x="${cx}" y="${cy}" text-anchor="start" font-size="8.5" fill="#8b949e" opacity="0"
+    function shaEl(cx, cy, ms, broken) {
+      const fill = broken ? '#f85149' : '#8b949e';
+      const label = broken ? 'SHA-256( ✖ corrupted input )' : 'SHA-256( L ∥ R )';
+      return `<text x="${cx}" y="${cy}" text-anchor="start" font-size="8.5" fill="${fill}" opacity="0"
         font-family="'SF Mono','Cascadia Code',monospace"
-        style="animation:nodeAppear 0.28s ease forwards;animation-delay:${ms}ms">SHA-256( L ∥ R )</text>`;
+        style="animation:nodeAppear 0.28s ease forwards;animation-delay:${ms}ms">${label}</text>`;
     }
 
     const PACE = 820;
     let parts = [];
 
     // ── Leaf node (depth 0, top) ──────────────────────────────────────────
-    parts.push(nodeEl(MX, ynm(0),
-      `LEAF  seq #${entry.seq}  ·  ${esc(entry.source_id)}`,
-      th(leafHash), 'purple', MNW, 0));
+    parts.push(nodeEl(MX, ynm(0), leafTopLabel, th(leafHash), leafCol, MNW, 0));
+
+    // ── If leaf is broken, annotate the break point immediately below ─────
+    if (!leafOk) {
+      const breakY = ynm(0) + NH/2 + 13;
+      const breakReason = phOk === false
+        ? 'content ≠ stored hash → chain broken here'
+        : 'stored entry_hash ≠ recomputed → chain broken here';
+      parts.push(`<text x="${MX}" y="${breakY}" text-anchor="middle" font-size="8" fill="#f85149" opacity="0"
+        font-family="'SF Mono','Cascadia Code',monospace"
+        style="animation:nodeAppear 0.3s ease forwards;animation-delay:320ms">⬆ ${esc(breakReason)}</text>`);
+    }
 
     // ── One step per path entry ───────────────────────────────────────────
     for (let i = 0; i < N; i++) {
@@ -816,40 +845,45 @@
       const oy   = ynm(i + 1);   // output node center y
       const isLast = i === N - 1;
 
-      // Sibling: right column, same y as current
+      // Sibling: right column, same y as current — always blue (we're not claiming it's broken)
       const sibTopLbl = step.side === 'left'
         ? `SIBLING [${i}]  ·  left input`
         : `SIBLING [${i}]  ·  right input`;
       parts.push(nodeEl(SX, cy, sibTopLbl, th(step.hash), 'blue', SNW, d0));
 
-      // Vertical line: current node bottom → merge point
-      parts.push(lineEl(MX, cy + NH/2, MX, my, 'orange', d0 + 80, 260));
+      // Vertical line: current node bottom → merge point (red if chain is broken)
+      parts.push(lineEl(MX, cy + NH/2, MX, my, chainCol, d0 + 80, 260));
 
-      // Diagonal arm: sibling inner edge → merge point
+      // Diagonal arm: sibling inner edge → merge point (always blue)
       parts.push(lineEl(SX - SNW/2 - 3, cy, MX + 4, my, 'blue', d0 + 100, 380));
 
-      // Merge dot at junction
-      parts.push(dotEl(MX, my, 'orange', d0 + 310));
+      // Merge dot at junction (red if broken)
+      parts.push(dotEl(MX, my, chainCol, d0 + 310));
 
-      // SHA-256 label right of junction
-      parts.push(shaEl(MX + 11, my + 4, d0 + 370));
+      // SHA-256 label — marks the operation as corrupted when chain is broken
+      parts.push(shaEl(MX + 11, my + 4, d0 + 370, !leafOk));
 
-      // Vertical line: merge point → output node top
-      parts.push(lineEl(MX, my + 5, MX, oy - NH/2, 'orange', d0 + 430, 250));
+      // Vertical line: merge point → output node top (red if broken)
+      parts.push(lineEl(MX, my + 5, MX, oy - NH/2, chainCol, d0 + 430, 250));
 
       // Output / root node
-      const outCol = isLast ? (valid ? 'green' : 'red') : 'orange';
+      const outCol = isLast
+        ? (valid ? 'green' : 'red')
+        : (leafOk ? 'orange' : 'red');
       const outTop = isLast
-        ? `MMR ROOT  ${valid ? '✓ VERIFIED' : '✖ INVALID'}`
-        : `H[${i+1}]  ·  step ${i+1} of ${N}`;
+        ? `MMR ROOT  ${valid ? '✓ VERIFIED' : leafOk ? '✖ HASH NOT IN TREE' : '✖ CHAIN BROKEN'}`
+        : leafOk
+          ? `H[${i+1}]  ·  step ${i+1} of ${N}`
+          : `H[${i+1}] ✖  built from tampered leaf`;
       parts.push(nodeEl(MX, oy, outTop, isLast ? th(root) : '…', outCol, MNW, d0 + 600));
     }
 
     // ── N=0: single-entry ledger, leaf IS root ────────────────────────────
     if (N === 0) {
       const oy = ynm(1);
-      parts.push(lineEl(MX, ynm(0) + NH/2, MX, oy - NH/2, 'orange', 220, 270));
-      parts.push(nodeEl(MX, oy, `MMR ROOT  ${valid ? '✓ VERIFIED' : '✖'}`,
+      parts.push(lineEl(MX, ynm(0) + NH/2, MX, oy - NH/2, chainCol, 220, 270));
+      parts.push(nodeEl(MX, oy,
+        `MMR ROOT  ${valid ? '✓ VERIFIED' : leafOk ? '✖ HASH NOT IN TREE' : '✖ CHAIN BROKEN'}`,
         th(root), valid ? 'green' : 'red', MNW, 500));
     }
 
@@ -885,12 +919,20 @@
         ? `<span style="color:var(--red)">Root MISMATCH vs anchor ✖</span>`
         : `<span style="color:var(--yellow)">No confirmed anchor yet</span>`;
 
+    // Describe which layer caught the tampering (the three-layer check)
     const plain = valid
       ? `<strong style="color:var(--text)">Record #${entry.seq} is authentic and has not been changed.</strong>
          You can prove this one record to an investigator — hand them just this entry, a short proof,
          and the Bitcoin-anchored fingerprint — <strong style="color:var(--text)">without revealing any other entry</strong>.`
-      : `<strong style="color:var(--text)">Record #${entry.seq} has been altered.</strong>
-         Its fingerprint no longer matches the anchored record, so the tampering is detectable.`;
+      : phOk === false
+        ? `<strong style="color:var(--text)">Record #${entry.seq} — payload altered.</strong>
+           The stored SHA-256 hash no longer matches the payload content.
+           The break is at the <strong style="color:var(--red)">leaf</strong> — every node above it in the tree is derived from corrupted input, so the entire chain above is invalid.`
+        : ehOk === false
+          ? `<strong style="color:var(--text)">Record #${entry.seq} — entry hash tampered.</strong>
+             The entry's own hash field was modified directly. The break is at the leaf.`
+          : `<strong style="color:var(--text)">Record #${entry.seq} — not found in MMR tree.</strong>
+             The payload and entry hash are internally consistent, but this entry hash does not appear in the authenticated Merkle Mountain Range.`;
 
     modal.innerHTML = `
       <div style="width:100%;max-width:660px">

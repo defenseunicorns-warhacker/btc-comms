@@ -17,13 +17,13 @@ nothing breaks on stage.
 rm -f ledger.db ledger.db-wal ledger.db-shm
 DEMO_MODE=true MOCK_ANCHOR=true \
   MOCK_CONFIRM_DELAY=10 STAMP_INTERVAL=8 UPGRADE_INTERVAL=8 \
-  python3 -m uvicorn src.api:app --port 8000
+  python3 -m uvicorn src.api:app --port 8001
 ```
 
 > Use `python3 -m uvicorn` (not bare `uvicorn`) — the console script may not be
 > on your PATH. Run from the repo root.
 
-Open <http://localhost:8000>. You should see the dark dashboard with a green
+Open <http://localhost:8001>. You should see the dark dashboard with a green
 "CHAIN INTACT" banner and a "LOCAL MOCK ANCHOR" tag.
 
 **Fallback:** `docker compose up --build` does the same in one command.
