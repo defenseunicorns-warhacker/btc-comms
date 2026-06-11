@@ -1,0 +1,39 @@
+kind: ZarfPackageConfig
+metadata:
+  name: stable
+  description: "STABLE — immutable, tamper-evident accountability ledger for AI agents in defense networks"
+  version: 0.1.0
+  # Air-gap ready: the image and manifests are bundled into the package tarball,
+  # so this deploys into a fully disconnected cluster with no internet access.
+  architecture: amd64
+
+components:
+  - name: stable
+    description: "Hash-chained, Bitcoin-anchorable event ledger with per-agent Ed25519 signing"
+    required: true
+    images:
+      # Bundled into the package; Zarf rewrites the manifest image ref to the
+      # in-cluster registry at deploy time (air-gap).
+      - "stable:latest"
+    manifests:
+      - name: stable-app
+        namespace: stable
+        files:
+          - k8s/deployment.yaml
+          - k8s/service.yaml
+    actions:
+      onDeploy:
+        # Generate a random API token Secret if one doesn't already exist.
+        before:
+          - cmd: |
+              ./zarf tools kubectl create namespace stable --dry-run=client -o yaml | ./zarf tools kubectl apply -f -
+              ./zarf tools kubectl -n stable get secret stable-auth >/dev/null 2>&1 || \
+                ./zarf tools kubectl -n stable create secret generic stable-auth \
+                  --from-literal=api-token="$(openssl rand -hex 32)"
+        after:
+          - wait:
+              cluster:
+                kind: Deployment
+                name: stable
+                namespace: stable
+                condition: Available

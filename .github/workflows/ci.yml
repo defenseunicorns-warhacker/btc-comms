@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest tests/ -v
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t stable:ci .
+
+      - name: Smoke test (boot + verify + strict-signing rejection)
+        run: |
+          docker run -d --name stable-ci -p 8000:8000 \
+            -e DEMO_MODE=true -e MOCK_ANCHOR=true -e STRICT_SIGNING=true stable:ci
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8000/verify >/dev/null; then break; fi
+            sleep 1
+          done
+          echo "verify:" && curl -s http://localhost:8000/verify
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8000/events \
+            -H 'Content-Type: application/json' -d '{"source_id":"x","payload":{"a":1}}')
+          test "$code" = "403" && echo "strict-signing rejects unsigned: OK"
+          docker rm -f stable-ci

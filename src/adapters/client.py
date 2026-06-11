@@ -35,9 +35,11 @@ log = logging.getLogger(__name__)
 # Signing is optional — client works unsigned if Cryptodome is absent
 try:
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from signing import get_or_create_keypair, sign, canonical_json as _canonical_json
+    from signing import get_or_create_keypair, sign
+    from ledger import canonical_json as _canonical_json   # canonical_json lives in ledger
     _SIGNING_AVAILABLE = True
-except Exception:
+except Exception as _exc:                                   # pragma: no cover
+    logging.getLogger(__name__).warning("Signing disabled in client: %s", _exc)
     _SIGNING_AVAILABLE = False
 
 
