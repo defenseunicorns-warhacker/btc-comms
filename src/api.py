@@ -38,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from ledger import LedgerStore
+from ledger import LedgerStore, canonical_json, sha256, payload_hash as _payload_hash
 from verify import verify as run_verify
 from anchor import AnchorLoop, _stamp_mock, _upgrade_mock
 import mmr as _mmr
@@ -218,7 +218,6 @@ async def append_event(req: EventRequest, request: Request):
 
     # Verify signature at ingest if provided — reject forged attribution
     if req.signature and req.key_id and _SIGNING_AVAILABLE:
-        from ledger import canonical_json
         payload_bytes = canonical_json(req.payload)
         if not verify_signature(req.signature, req.key_id, req.source_id, payload_bytes):
             raise HTTPException(status_code=403, detail=(
@@ -279,11 +278,14 @@ async def get_mmr_proof(seq: int):
     is required.
 
     Response includes:
-      entry        — the entry itself (share only this + the proof, not the full ledger)
-      proof        — {type:"mmr", leaf_hash, path, peak_hashes, peak_index, leaf_index, leaf_count}
-      anchor       — the most recent anchor whose MMR root covers this entry
-      valid        — whether the proof verifies locally right now
-      mmr_root     — the root the proof computes to
+      entry            — the entry itself
+      proof            — {type:"mmr", leaf_hash, path, peak_hashes, peak_index, leaf_index, leaf_count}
+      anchor           — the most recent anchor whose MMR root covers this entry
+      valid            — True only if payload integrity, entry_hash integrity, AND MMR inclusion all pass
+      payload_hash_ok  — payload still matches its stored hash (detects payload tampering)
+      entry_hash_ok    — entry_hash still matches the recomputed value (detects field tampering)
+      mmr_inclusion_ok — entry_hash is present in the MMR tree
+      mmr_root         — the root the proof computes to
     """
     entry = store.get_entry(seq)
     if entry is None:
@@ -294,7 +296,27 @@ async def get_mmr_proof(seq: int):
     except (IndexError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    valid, computed_root = _mmr.verify_proof(entry["entry_hash"], proof)
+    # 1. Verify payload still matches its stored hash.
+    #    A tampered payload leaves entry_hash intact, so MMR inclusion alone cannot
+    #    catch this — the content check is what catches it.
+    payload = entry["payload"]
+    computed_ph = _payload_hash(payload) if isinstance(payload, dict) else sha256(payload.encode())
+    payload_hash_ok = computed_ph == entry["payload_hash"]
+
+    # 2. Verify entry_hash still matches what the stored fields hash to.
+    recomputed_eh = sha256(canonical_json({
+        "seq": entry["seq"],
+        "timestamp": entry["timestamp"],
+        "source_id": entry["source_id"],
+        "payload_hash": entry["payload_hash"],
+        "prev_hash": entry["prev_hash"],
+    }))
+    entry_hash_ok = recomputed_eh == entry["entry_hash"]
+
+    # 3. Verify this entry_hash is present in the MMR tree.
+    mmr_inclusion_ok, computed_root = _mmr.verify_proof(entry["entry_hash"], proof)
+
+    valid = payload_hash_ok and entry_hash_ok and mmr_inclusion_ok
 
     # Find the best anchor (highest confirmed, else highest pending) that covers this seq
     anchors = store.get_all_anchors()
@@ -310,6 +332,9 @@ async def get_mmr_proof(seq: int):
         "proof": proof,
         "anchor": best_anchor,
         "valid": valid,
+        "payload_hash_ok": payload_hash_ok,
+        "entry_hash_ok": entry_hash_ok,
+        "mmr_inclusion_ok": mmr_inclusion_ok,
         "mmr_root": computed_root,
         "root_matches_anchor": root_matches,
     }
@@ -462,7 +487,6 @@ async def seed_events(request: Request, n: int = 10):
     random.seed(42)
     # Per-agent signing so the demo's primary populate path exercises the real
     # Ed25519 attribution flow (otherwise seeded entries show as unsigned).
-    from ledger import canonical_json
     results = []
     for i in range(n):
         agent = agents[i % len(agents)]

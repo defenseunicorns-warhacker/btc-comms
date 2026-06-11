@@ -94,6 +94,31 @@ def test_proof_404_for_missing(client):
     assert client.get("/entries/999/proof").status_code == 404
 
 
+def test_tamper_detected_by_proof_endpoint(client):
+    """Proof endpoint must catch a tampered payload, not just check MMR inclusion.
+
+    A tampered payload leaves entry_hash intact in the DB, so MMR inclusion passes.
+    The payload integrity check (payload_hash_ok) is what catches it.
+    """
+    client.post("/seed?n=6")
+
+    # Baseline: proof is valid before tampering
+    r = client.get("/entries/3/proof").json()
+    assert r["valid"] is True
+    assert r["payload_hash_ok"] is True
+    assert r["entry_hash_ok"] is True
+    assert r["mmr_inclusion_ok"] is True
+
+    # Tamper the payload of seq=3 (entry_hash left intact in DB)
+    client.post("/tamper", json={"seq": 3, "field": "payload", "new_value": "HACKED"})
+
+    r = client.get("/entries/3/proof").json()
+    assert r["valid"] is False          # must not pass
+    assert r["payload_hash_ok"] is False  # payload no longer matches its hash
+    assert r["entry_hash_ok"] is True     # entry_hash still matches stored fields
+    assert r["mmr_inclusion_ok"] is True  # MMR still has the original entry_hash
+
+
 # ---------------------------------------------------------------------------
 # Signature handling
 # ---------------------------------------------------------------------------
