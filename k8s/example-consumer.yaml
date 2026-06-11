@@ -1,0 +1,65 @@
+# Example: a consuming app adopting STABLE as a shared cluster capability.
+#
+# This is NOT part of the STABLE bundle — it illustrates how *any other* UDS app
+# opts into the shared recorder. The app runs in its own namespace (its own trust
+# domain) and reaches the recorder only through the write-only ingest API at the
+# in-cluster Service address. It never touches the ledger's storage.
+#
+# Here the app is one of STABLE's own example agents, but the pattern is identical
+# for any workload: set LEDGER_URL, add the two-line adapter, done.
+#
+#   kubectl apply -f k8s/service.yaml -f k8s/deployment.yaml   # the recorder
+#   kubectl apply -f k8s/example-consumer.yaml                 # a consuming app
+#
+# Note on enrollment: the hardened recorder runs STRICT_SIGNING=true, so this
+# app's signing key must be enrolled with the recorder first (TOFU on a trusted
+# cluster; a provisioning authority / enrollment CA in production). See
+# docs/UDS_CAPABILITY.md → "Enrollment is the trust anchor".
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-a
+  labels:
+    app.kubernetes.io/part-of: accountability-layer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: doc-agent
+  namespace: app-a
+  labels:
+    app.kubernetes.io/name: doc-agent
+    app.kubernetes.io/part-of: accountability-layer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: doc-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: doc-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: doc-agent
+          image: stable:latest
+          # The whole integration: point at the shared recorder Service and run.
+          command: ["python3", "examples/file_agent.py", "--loop"]
+          env:
+            - name: LEDGER_URL
+              value: "http://stable.stable.svc.cluster.local:8000"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
