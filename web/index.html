@@ -214,6 +214,24 @@
     }
 
     .empty-state { padding: 20px; color: var(--muted); font-size: 12px; text-align: center; }
+
+    /* ── Proof animation ── */
+    @keyframes nodeAppear {
+      from { opacity: 0; transform: scale(0.82); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    @keyframes lineGrow {
+      from { stroke-dashoffset: var(--len); }
+      to   { stroke-dashoffset: 0; }
+    }
+    @keyframes rootGlow {
+      0%,100% { filter: drop-shadow(0 0 4px currentColor); }
+      50%      { filter: drop-shadow(0 0 18px currentColor); }
+    }
+    .entry-row { cursor: pointer; }
+    .entry-row:hover .hash-pill { color: var(--blue); }
+    .proof-hint { font-size: 9px; color: var(--purple); opacity: 0; transition: opacity 0.15s; margin-top: 1px; }
+    .entry-row:hover .proof-hint { opacity: 1; }
   </style>
 </head>
 <body>
@@ -407,12 +425,13 @@
       const hashShort = e.entry_hash ? e.entry_hash.slice(0,8)+'…'+e.entry_hash.slice(-8) : '';
       const anchorMark = anchoredThrough != null && e.seq <= anchoredThrough ? '⚓' : '';
       return `
-        <div class="entry-row ${cls}">
+        <div class="entry-row ${cls}" onclick="clickEntry(${e.seq})" title="Click to view MMR proof">
           <span class="seq">#${e.seq} ${anchorMark}</span>
           <div>
             <span class="source">${escHtml(e.source_id)}</span>
             <span class="payload-type"> · ${escHtml(String(payloadType))}</span>
             <span class="hash-pill">${hashShort}</span>
+            <span class="proof-hint">◈ click to verify</span>
           </div>
           <span class="ts-cell">${ts}</span>
         </div>`;
@@ -557,79 +576,207 @@
     if (fresh) { anchors = fresh; renderAnchors(); }
   }
 
+  async function clickEntry(seq) {
+    const result = await api('GET', `/entries/${seq}/proof`).catch(e => { alert(e); return null; });
+    if (result) showProofAnimation(result);
+  }
+
   async function doProof() {
     const seq = parseInt(document.getElementById('proofSeq').value, 10);
     if (isNaN(seq) || seq < 0) { alert('Enter a valid seq number'); return; }
     const result = await api('GET', `/entries/${seq}/proof`).catch(e => { alert(e); return null; });
-    if (!result) return;
-    showProofModal(result);
+    if (result) showProofAnimation(result);
   }
 
-  function showProofModal(result) {
+  function showProofAnimation(result) {
     const existing = document.getElementById('proofModal');
     if (existing) existing.remove();
 
-    const entry = result.entry;
-    const proof = result.proof;
-    const anchor = result.anchor;
-    const valid = result.valid;
-    const rootOk = result.root_matches_anchor;
+    const { entry, proof, anchor, valid, root_matches_anchor: rootOk } = result;
+    const path = proof.path;
+    const leafHash = proof.leaf_hash;
+    const root = proof.root;
+    const N = path.length;
 
-    const pathHtml = proof.path.map((step, i) =>
-      `<div style="padding:3px 0;font-size:10px;color:var(--muted)">
-        [${i}] <span style="color:var(--blue)">${step.side}</span>
-        <span style="font-family:monospace">${step.hash.slice(0,12)}…${step.hash.slice(-8)}</span>
-      </div>`
-    ).join('');
+    // ── SVG layout constants ──────────────────────────────────────────────
+    const W = 600;
+    const STEP_H = 115;   // vertical distance between levels
+    const NODE_W = 230;
+    const NODE_H = 44;
+    const CX = W / 2;
+    const SOFF = 180;     // sibling horizontal offset from center
+    const TOP_PAD = 55;
+    const BOT_PAD = 50;
+    const SVG_H = Math.max(N * STEP_H + TOP_PAD + BOT_PAD + NODE_H, 200);
 
-    const anchorHtml = anchor
-      ? `<div class="verify-row"><span class="verify-key">Anchor seq</span><span class="verify-val">≤${anchor.head_seq}</span></div>
-         <div class="verify-row"><span class="verify-key">Anchor status</span><span class="verify-val ${anchor.status === 'confirmed' ? 'ok' : 'warn'}">${anchor.status}</span></div>
-         <div class="verify-row"><span class="verify-key">Root matches anchor</span><span class="verify-val ${rootOk ? 'ok' : rootOk === false ? 'broken' : 'warn'}">${rootOk === null ? 'no anchor root' : rootOk ? 'yes' : 'NO — MISMATCH'}</span></div>`
-      : `<div class="verify-row"><span class="verify-key">Anchor</span><span class="verify-val warn">none covering this seq yet</span></div>`;
+    // center-y of level i (0=leaf at bottom, N=root at top)
+    const ly = i => SVG_H - BOT_PAD - NODE_H / 2 - i * STEP_H;
 
+    const th = h => h ? h.slice(0, 9) + '…' + h.slice(-7) : '—';
+    const esc = s => escHtml(String(s));
+
+    const C = {
+      purple: { f: 'rgba(188,140,255,0.15)', s: '#bc8cff', t: '#bc8cff' },
+      blue:   { f: 'rgba(88,166,255,0.12)',  s: '#58a6ff', t: '#58a6ff' },
+      orange: { f: 'rgba(255,166,87,0.15)',  s: '#ffa657', t: '#ffa657' },
+      green:  { f: 'rgba(63,185,80,0.22)',   s: '#3fb950', t: '#3fb950' },
+      red:    { f: 'rgba(248,81,73,0.22)',    s: '#f85149', t: '#f85149' },
+    };
+
+    function nodeEl(cx, cy, topLbl, hashLbl, col, ms) {
+      const c = C[col] || C.blue;
+      const nx = cx - NODE_W/2, ny = cy - NODE_H/2;
+      const anim = `opacity:0;animation:nodeAppear 0.4s ease forwards;animation-delay:${ms}ms`;
+      return `<g style="${anim}">
+        <rect x="${nx}" y="${ny}" width="${NODE_W}" height="${NODE_H}" rx="5"
+          fill="${c.f}" stroke="${c.s}" stroke-width="1.5"
+          style="filter:drop-shadow(0 0 7px ${c.s}55)"/>
+        <text x="${cx}" y="${ny+13}" text-anchor="middle" font-size="9" fill="${c.t}" opacity="0.7"
+          font-family="'SF Mono','Cascadia Code',monospace">${esc(topLbl)}</text>
+        <text x="${cx}" y="${ny+30}" text-anchor="middle" font-size="11.5" font-weight="700"
+          fill="${c.t}" font-family="'SF Mono','Cascadia Code',monospace" letter-spacing="0.3">${esc(hashLbl)}</text>
+      </g>`;
+    }
+
+    function lineEl(x1, y1, x2, y2, col, ms, dur) {
+      const len = Math.hypot(x2-x1, y2-y1).toFixed(1);
+      const stroke = (C[col] || C.blue).s;
+      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+        stroke="${stroke}" stroke-width="1.5" stroke-linecap="round"
+        stroke-dasharray="${len}" stroke-dashoffset="${len}" opacity="0.65"
+        style="animation:lineGrow ${dur}ms ease forwards;animation-delay:${ms}ms"/>`;
+    }
+
+    function shaTag(cx, cy, ms) {
+      return `<text x="${cx}" y="${cy}" text-anchor="middle" font-size="9" fill="#8b949e" opacity="0"
+        font-family="'SF Mono','Cascadia Code',monospace"
+        style="animation:nodeAppear 0.3s ease forwards;animation-delay:${ms}ms">SHA-256( L ⊕ R )</text>`;
+    }
+
+    const PACE = 780; // ms per step
+    let parts = [];
+
+    // ── Level 0: leaf ────────────────────────────────────────────────────
+    parts.push(nodeEl(CX, ly(0),
+      `LEAF   seq #${entry.seq} · ${esc(entry.source_id)}`,
+      th(leafHash), 'purple', 0));
+
+    // ── Steps 0…N-1 ──────────────────────────────────────────────────────
+    for (let i = 0; i < N; i++) {
+      const step = path[i];
+      const d0 = (i + 1) * PACE;
+      const currY = ly(i), parentY = ly(i + 1);
+      const sibX = step.side === 'right' ? CX + SOFF : CX - SOFF;
+
+      // sibling node
+      parts.push(nodeEl(sibX, currY,
+        `SIBLING [${i}]  (${step.side})`,
+        th(step.hash), 'blue', d0));
+
+      // line: current path node → parent
+      parts.push(lineEl(CX, currY - NODE_H/2, CX, parentY + NODE_H/2, 'orange', d0+140, 350));
+
+      // line: sibling → parent
+      const sibEdge = step.side === 'right' ? sibX - NODE_W/2 + 18 : sibX + NODE_W/2 - 18;
+      parts.push(lineEl(sibEdge, currY - NODE_H/2, CX, parentY + NODE_H/2, 'blue', d0+140, 460));
+
+      // SHA-256 label at midpoint
+      parts.push(shaTag(CX + 14, (currY + parentY) / 2 - 2, d0 + 380));
+
+      // output / root node
+      const isRoot = (i === N - 1);
+      const outCol  = isRoot ? (valid ? 'green' : 'red') : 'orange';
+      const outTop  = isRoot
+        ? `MMR ROOT  ${valid ? '✓ VERIFIED' : '✖ INVALID'}`
+        : `H[${i+1}]`;
+      parts.push(nodeEl(CX, parentY, outTop, th(root), outCol, d0 + 560));
+    }
+
+    // ── N=0 edge case: leaf IS root ───────────────────────────────────────
+    if (N === 0) {
+      const outCol = valid ? 'green' : 'red';
+      const rootY = ly(0) - STEP_H;
+      parts.push(lineEl(CX, ly(0) - NODE_H/2, CX, rootY + NODE_H/2, 'orange', 200, 300));
+      parts.push(nodeEl(CX, rootY, `ROOT  ${valid ? '✓' : '✖'}`, th(root), outCol, 500));
+    }
+
+    // ── Bitcoin anchor label above root ───────────────────────────────────
+    const anchorDelay = (N + 1) * PACE;
+    const anchorY     = ly(Math.max(N, 1)) - NODE_H / 2 - 18;
+    if (anchor) {
+      const ac = anchor.status === 'confirmed' ? '#3fb950' : '#d29922';
+      const at = anchor.status === 'confirmed'
+        ? `⚓ Bitcoin confirmed · block ${anchor.block_height || '…'}`
+        : `⚓ Pending Bitcoin confirmation`;
+      parts.push(`<text x="${CX}" y="${anchorY}" text-anchor="middle" font-size="10.5"
+        fill="${ac}" font-weight="700" opacity="0"
+        font-family="'SF Mono','Cascadia Code',monospace"
+        style="animation:nodeAppear 0.45s ease forwards,rootGlow 2s ease infinite;animation-delay:${anchorDelay}ms,${anchorDelay}ms">
+        ${esc(at)}</text>`);
+    }
+
+    const svgBlock = `<svg width="${W}" height="${SVG_H}" xmlns="http://www.w3.org/2000/svg">
+      ${parts.join('\n')}</svg>`;
+
+    // ── Modal shell ───────────────────────────────────────────────────────
     const modal = document.createElement('div');
     modal.id = 'proofModal';
-    modal.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.75);z-index:1000;display:flex;align-items:center;justify-content:center`;
+    modal.style.cssText = `position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.84);
+      z-index:1000;display:flex;flex-direction:column;align-items:center;
+      overflow-y:auto;padding:28px 16px 40px`;
+
+    const rootOkHtml = rootOk === true
+      ? `<span style="color:var(--green)">Root matches Bitcoin anchor ✓</span>`
+      : rootOk === false
+        ? `<span style="color:var(--red)">Root MISMATCH vs anchor ✖</span>`
+        : `<span style="color:var(--yellow)">No confirmed anchor yet</span>`;
+
     modal.innerHTML = `
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;width:560px;max-height:80vh;overflow-y:auto;padding:20px">
+      <div style="width:100%;max-width:660px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <span style="font-size:14px;font-weight:600;color:var(--purple)">Merkle Inclusion Proof — seq #${entry.seq}</span>
-          <button onclick="document.getElementById('proofModal').remove()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px">✕</button>
+          <span style="font-size:14px;font-weight:700;color:var(--purple);letter-spacing:0.4px">
+            ◈ MMR Inclusion Proof — seq #${entry.seq}
+          </span>
+          <button onclick="document.getElementById('proofModal').remove()"
+            style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:20px;line-height:1">✕</button>
         </div>
 
-        <div style="background:${valid ? 'rgba(63,185,80,0.1)' : 'rgba(248,81,73,0.1)'};border:1px solid ${valid ? 'rgba(63,185,80,0.4)' : 'rgba(248,81,73,0.4)'};border-radius:4px;padding:8px 12px;margin-bottom:14px;font-weight:600;color:${valid ? 'var(--green)' : 'var(--red)'}">
+        <div style="background:${valid?'rgba(63,185,80,0.1)':'rgba(248,81,73,0.1)'};
+          border:1px solid ${valid?'rgba(63,185,80,0.4)':'rgba(248,81,73,0.4)'};
+          border-radius:5px;padding:10px 14px;margin-bottom:14px;
+          font-size:12px;font-weight:600;color:${valid?'var(--green)':'var(--red)'};line-height:1.6">
           ${valid ? '✓ PROOF VALID — entry is authentic and unmodified' : '✖ PROOF INVALID — entry has been tampered'}
+          <div style="font-weight:400;font-size:11px;margin-top:2px;opacity:0.85">
+            ${N} hash steps · ${esc(entry.source_id)} · ${esc(entry.timestamp)} · ${rootOkHtml}
+          </div>
         </div>
 
-        <div style="margin-bottom:12px">
-          <div class="section-label" style="margin-bottom:6px">Entry</div>
-          <div class="verify-row"><span class="verify-key">source_id</span><span class="verify-val">${escHtml(entry.source_id)}</span></div>
-          <div class="verify-row"><span class="verify-key">timestamp</span><span class="verify-val">${escHtml(entry.timestamp)}</span></div>
-          <div class="verify-row"><span class="verify-key">payload</span><span class="verify-val" style="font-size:10px;max-width:300px;word-break:break-all">${escHtml(JSON.stringify(entry.payload))}</span></div>
-          <div class="verify-row"><span class="verify-key">entry_hash</span><span class="verify-val" style="font-size:10px">${entry.entry_hash.slice(0,16)}…</span></div>
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:7px;
+          padding:8px;overflow:hidden;margin-bottom:14px">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;
+            padding:5px 8px 8px;text-align:center">
+            Hash-Chain Proof  ·  leaf → sibling → SHA-256 → … → root
+          </div>
+          <div style="display:flex;justify-content:center;overflow-x:auto">
+            ${svgBlock}
+          </div>
         </div>
 
-        <div style="margin-bottom:12px">
-          <div class="section-label" style="margin-bottom:6px">Proof Path (${proof.path.length} steps, ${proof.entry_count} total entries)</div>
-          <div style="padding:6px 0;font-size:10px;color:var(--muted)">leaf: <span style="font-family:monospace;color:var(--text)">${proof.leaf_hash.slice(0,12)}…</span></div>
-          ${pathHtml}
-          <div style="padding:6px 0;font-size:10px;color:var(--muted)">root: <span style="font-family:monospace;color:var(--purple)">${proof.root.slice(0,12)}…${proof.root.slice(-8)}</span></div>
-        </div>
-
-        <div>
-          <div class="section-label" style="margin-bottom:6px">Bitcoin Anchor</div>
-          ${anchorHtml}
-        </div>
-
-        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-          <div class="section-label" style="margin-bottom:6px">Share this proof</div>
-          <div style="font-size:11px;color:var(--muted);line-height:1.5">
-            A verifier needs only: <strong style="color:var(--text)">this entry + this proof path + the anchored root</strong>.<br>
-            They do not need any other entries to confirm authenticity.
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:5px;
+          padding:10px 14px;font-size:11px;color:var(--muted);line-height:1.7">
+          <div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Entry</div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap">
+            <span><span style="color:var(--muted)">source_id</span>  <span style="color:var(--blue)">${esc(entry.source_id)}</span></span>
+            <span><span style="color:var(--muted)">seq</span>  <span style="color:var(--text)">#${entry.seq}</span></span>
+            <span style="word-break:break-all"><span style="color:var(--muted)">hash</span>  <span style="color:var(--purple);font-size:10px">${esc(entry.entry_hash.slice(0,20))}…</span></span>
+          </div>
+          <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px">
+            A verifier needs only <strong style="color:var(--text)">this entry + ${N}-step path + anchored root</strong>
+            to confirm authenticity. No other records need to be disclosed.
           </div>
         </div>
       </div>`;
+
     document.body.appendChild(modal);
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
   }
