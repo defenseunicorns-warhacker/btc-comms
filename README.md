@@ -23,15 +23,16 @@ Every event an AI agent emits is cryptographically chained to the previous one a
 pip install -r requirements.txt
 
 # Local demo (mock Bitcoin confirmation, tamper endpoint enabled)
-DEMO_MODE=true MOCK_ANCHOR=true uvicorn src.api:app --reload
+# Use `python3 -m uvicorn` so it works even when the uvicorn script isn't on PATH.
+DEMO_MODE=true MOCK_ANCHOR=true python3 -m uvicorn src.api:app --reload
 
 open http://localhost:8000
 ```
 
-One command with Docker:
+One command with Docker (`--build` ensures you don't run a stale cached image):
 
 ```bash
-docker compose up
+docker compose up --build
 ```
 
 Run the simulated AI agent in a second terminal:

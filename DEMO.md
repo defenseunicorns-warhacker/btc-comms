@@ -18,8 +18,11 @@ fallback so nothing can break on stage.
 rm -f ledger.db ledger.db-wal ledger.db-shm
 DEMO_MODE=true MOCK_ANCHOR=true \
   MOCK_CONFIRM_DELAY=10 STAMP_INTERVAL=8 UPGRADE_INTERVAL=8 \
-  uvicorn src.api:app --port 8000
+  python3 -m uvicorn src.api:app --port 8000
 ```
+
+> Use `python3 -m uvicorn` (not bare `uvicorn`) — the console script may not be
+> on your PATH. Run from the repo root.
 
 > Verified end-to-end: seed→`ok:true` (11 entries) → tamper seq 7 →
 > `ok:false, broken_at:7, reason:"payload altered"` → anchors confirm. The
@@ -28,7 +31,7 @@ DEMO_MODE=true MOCK_ANCHOR=true \
 Open <http://localhost:8000>. You should see the dark dashboard with a green
 "CHAIN INTACT" banner and a "LOCAL MOCK ANCHOR" tag.
 
-**Fallback:** `docker compose up` does the same in one command.
+**Fallback:** `docker compose up --build` does the same in one command.
 
 ---
 
