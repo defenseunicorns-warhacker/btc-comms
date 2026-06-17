@@ -26,10 +26,12 @@ Garbage in is now *permanently recorded* garbage, which is exactly what an
 investigation needs.
 
 **Residual trust assumption:** key *enrollment* is the trust anchor. In the demo
-keys self-enroll on first use (TOFU). In production, enrollment must be gated by
-a provisioning authority (CAC/PIV, an enrollment CA, or HSM attestation) so an
-attacker cannot pre-register a victim's `source_id`. The signing/verification
-path is unchanged — only the key-issuance step hardens.
+keys self-enroll on first use (TOFU). Set `REQUIRE_PROVISIONED_KEYS=true` and the
+recorder honors only authority-issued keys, rejecting self-enrolled keys at ingest;
+set `ALLOW_AUTO_ENROLL=false` to forbid self-enrollment entirely, issuing keys
+out-of-band via a provisioning authority (CAC/PIV, an enrollment CA, or HSM
+attestation) so an attacker cannot pre-register a victim's `source_id`. The
+signing/verification path is unchanged — only the key-issuance step hardens.
 
 **Registry integrity:** `keys/registry.json` is the trust anchor for key–identity
 binding. In production it must be write-protected at the OS/deployment level
@@ -263,6 +265,8 @@ See [DEMO.md](DEMO.md) for runnable example apps built on these adapters.
 | `MOCK_ANCHOR` | `false` | Local mock Bitcoin confirmation (no network) |
 | `MOCK_CONFIRM_DELAY` | `30` | Seconds until a mock anchor "confirms" |
 | `STRICT_SIGNING` | `false` | **Reject any event without a valid, registered signature** |
+| `REQUIRE_PROVISIONED_KEYS` | `false` | **Honor only authority-issued keys** — reject self-enrolled (TOFU) keys at ingest even if the signature is valid. Implies signing. |
+| `ALLOW_AUTO_ENROLL` | `true` | When `false`, new identities cannot self-enroll; keys must be issued via `provision_keypair()` / `register_public_key()` (CAC/PIV / HSM path) |
 | `API_TOKEN` | _(unset)_ | When set, mutating endpoints require `Authorization: Bearer <token>` or `X-API-Key` |
 | `DB_PATH` | `ledger.db` | SQLite path |
 | `STAMP_INTERVAL` | `30` | Seconds between anchor stamps |

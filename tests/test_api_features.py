@@ -121,6 +121,56 @@ def test_legitimate_signature_accepted(client):
 
 
 # ---------------------------------------------------------------------------
+# REQUIRE_PROVISIONED_KEYS — the recorder honors only authority-provisioned keys
+# (the hardening that closes the self-enrollment / TOFU trust gap)
+# ---------------------------------------------------------------------------
+
+def test_info_reflects_require_provisioned_keys(tmp_path, monkeypatch):
+    api = _make_app(tmp_path, monkeypatch, REQUIRE_PROVISIONED_KEYS="true")
+    with TestClient(api.app) as c:
+        assert c.get("/info").json()["require_provisioned_keys"] is True
+
+
+def test_provisioned_required_rejects_self_enrolled(tmp_path, monkeypatch):
+    """A valid signature from a self-enrolled (TOFU) key is rejected at ingest."""
+    api = _make_app(tmp_path, monkeypatch, REQUIRE_PROVISIONED_KEYS="true")
+    import signing
+    from ledger import canonical_json
+    with TestClient(api.app) as c:
+        payload = {"event": "x"}
+        key, key_id = signing.get_or_create_keypair("tofu-agent")     # self-enrolled
+        sig = signing.sign(key, "tofu-agent", canonical_json(payload))
+        r = c.post("/events", json={
+            "source_id": "tofu-agent", "payload": payload, "signature": sig, "key_id": key_id,
+        })
+        assert r.status_code == 403
+
+
+def test_provisioned_required_accepts_authority_key(tmp_path, monkeypatch):
+    """A key issued by the provisioning authority is accepted under the gate."""
+    api = _make_app(tmp_path, monkeypatch, REQUIRE_PROVISIONED_KEYS="true")
+    import signing
+    from ledger import canonical_json
+    with TestClient(api.app) as c:
+        signing.provision_keypair("authorized-agent")                 # authority enrollment
+        key, key_id = signing.get_or_create_keypair("authorized-agent")
+        payload = {"event": "x"}
+        sig = signing.sign(key, "authorized-agent", canonical_json(payload))
+        r = c.post("/events", json={
+            "source_id": "authorized-agent", "payload": payload, "signature": sig, "key_id": key_id,
+        })
+        assert r.status_code == 201
+
+
+def test_provisioned_required_rejects_unsigned(tmp_path, monkeypatch):
+    """The gate implies signing: unsigned events are rejected outright."""
+    api = _make_app(tmp_path, monkeypatch, REQUIRE_PROVISIONED_KEYS="true")
+    with TestClient(api.app) as c:
+        r = c.post("/events", json={"source_id": "x", "payload": {"event": "y"}})
+        assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
 # DDIL connectivity heartbeat telemetry
 # ---------------------------------------------------------------------------
 

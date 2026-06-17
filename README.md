@@ -91,6 +91,8 @@ python3 examples/file_agent.py    # a file-writing agent; or llm_agent.py / ddil
 
 | Doc | What's in it |
 |---|---|
+| [docs/EXPLAINER.md](docs/EXPLAINER.md) | **Plain-English tour of the whole system** — fingerprints, leaves, the chain, signatures & key enrollment, the write-only recorder, stamping & Bitcoin (stamp vs. hash), verify, selective disclosure, DDIL, the ROE record, air-gap delivery, an end-to-end walkthrough, and an honest "what it does *not* do" |
+| [docs/WORK_STATEMENT.md](docs/WORK_STATEMENT.md) | **Requirement-by-requirement conformance** to the AI-accountability work statement — each requirement mapped to the mechanism and the code that implements it |
 | [docs/PITCH.md](docs/PITCH.md) | The pitch, scoring-criteria mapping, **mission impact** (DoDD 3000.09 / Responsible AI), and the "AI that tried to cover its tracks" scenario |
 | [docs/DEMO.md](docs/DEMO.md) | The rehearsed live-demo runbook + the runnable example apps |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it works — data model, hash chain, Merkle Mountain Range, Bitcoin anchor, signing, DDIL, the API, configuration, trust model |

@@ -65,9 +65,12 @@ STAMP_INTERVAL = int(os.getenv("STAMP_INTERVAL", "30"))
 UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "30"))
 
 # Enforcement knobs (off by default so the demo is frictionless).
-#   STRICT_SIGNING=true  → reject any event without a valid registered signature.
-#   API_TOKEN=<secret>   → require Bearer/X-API-Key on all mutating endpoints.
+#   STRICT_SIGNING=true           → reject any event without a valid registered signature.
+#   REQUIRE_PROVISIONED_KEYS=true → additionally reject self-enrolled (TOFU) keys; only
+#                                   authority-provisioned keys are honored. Implies signing.
+#   API_TOKEN=<secret>            → require Bearer/X-API-Key on all mutating endpoints.
 STRICT_SIGNING = _flag("STRICT_SIGNING")
+REQUIRE_PROVISIONED_KEYS = _flag("REQUIRE_PROVISIONED_KEYS")
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 # Restrict in production: CORS_ORIGINS=https://dashboard.example.com
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",")]
@@ -188,6 +191,7 @@ async def info():
         "demo_mode": DEMO_MODE,
         "mock_anchor": MOCK_ANCHOR,
         "strict_signing": STRICT_SIGNING,
+        "require_provisioned_keys": REQUIRE_PROVISIONED_KEYS,
     }
 
 
@@ -206,23 +210,26 @@ class EventRequest(BaseModel):
 async def append_event(req: EventRequest, request: Request):
     _require_auth(request)
 
-    # Strict mode: every event MUST carry a valid, registered signature.
-    if STRICT_SIGNING:
+    # Strict / provisioned modes: every event MUST carry a valid, registered signature.
+    if STRICT_SIGNING or REQUIRE_PROVISIONED_KEYS:
         if not _SIGNING_AVAILABLE:
-            raise HTTPException(status_code=503, detail="STRICT_SIGNING set but signing module unavailable")
+            raise HTTPException(status_code=503, detail="Signature enforcement enabled but signing module unavailable")
         if not (req.signature and req.key_id):
             raise HTTPException(status_code=403, detail=(
-                "STRICT_SIGNING enabled — unsigned events are rejected. "
+                "Signature enforcement enabled — unsigned events are rejected. "
                 "Provide signature + key_id."
             ))
 
-    # Verify signature at ingest if provided — reject forged attribution
+    # Verify signature at ingest if provided — reject forged attribution. When
+    # REQUIRE_PROVISIONED_KEYS is set, also reject self-enrolled (TOFU) keys: only
+    # keys issued by the provisioning authority are honored.
     if req.signature and req.key_id and _SIGNING_AVAILABLE:
         payload_bytes = canonical_json(req.payload)
-        if not verify_signature(req.signature, req.key_id, req.source_id, payload_bytes):
+        if not verify_signature(req.signature, req.key_id, req.source_id, payload_bytes,
+                                require_provisioned=REQUIRE_PROVISIONED_KEYS):
             raise HTTPException(status_code=403, detail=(
                 f"Signature verification failed for source_id='{req.source_id}'. "
-                "Event rejected — forged attribution detected."
+                "Event rejected — forged attribution or unprovisioned key."
             ))
 
     # ROE schema validation — warn but don't reject (backwards-compatible)
