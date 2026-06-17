@@ -130,6 +130,58 @@ short proof path, and the anchored root; they verify it independently. Nothing
 else needs to be declassified. (A legacy full-tree implementation lives in
 [src/merkle.py](../src/merkle.py) as a reference.)
 
+### Proof-of-processing bridge (model anchoring + TEE attestation)
+
+STABLE is fundamentally a proof-of-storage system: it proves *what* an agent
+recorded and that the record hasn't changed. Two additional layers bridge toward
+proof-of-processing — proving *how* the output was produced:
+
+**1. Model deployment anchoring** ([src/model_anchor.py](../src/model_anchor.py))
+
+At deploy time, the deploying system hashes the model weight files with
+`hash_model_weights()` and records the hash in the ledger via `POST /model/register`.
+This proves which weights were loaded, without giving the recorder access to the
+files. Combined with the inference log below, an investigator can:
+  - Look up which model was deployed at time T (from the ledger)
+  - Re-hash the weight files and verify against the on-chain record
+  - Re-run the model on the recorded inputs and verify the output matches
+
+**2. TEE attestation** ([src/tee.py](../src/tee.py))
+
+A Trusted Execution Environment (Intel TDX, AMD SEV-SNP, Intel SGX) produces a
+hardware-backed quote that cryptographically identifies *which binary ran*. The
+inference service collects this quote via `collect_attestation()` and posts it to
+`POST /tee/attest`. Binding the model weights hash into `report_data` links the
+attestation to the specific deployment record.
+
+In demo/test mode, set `MOCK_TEE=true` for a simulated measurement. Production
+integration points for the TDX and SEV kernel drivers are stubbed in
+[src/tee.py](../src/tee.py) — swap in the platform SDK to go live.
+
+**3. Deterministic inference logging** ([src/adapters/inference_logger.py](../src/adapters/inference_logger.py))
+
+The `InferenceLogger` adapter records inputs and outputs alongside every inference
+call. `hash_inputs=True` (default) stores SHA-256(inputs) rather than raw data —
+sufficient for re-execution verification without exposing classified sensor data or
+prompts. Wrap any inference function with one decorator:
+
+```python
+logger = InferenceLogger(client, model_id="llama-3-70b", model_version="v1.2.3")
+
+@logger.log
+def classify_threat(sensor_data):
+    return model.run(sensor_data)
+```
+
+**What these three layers together prove:**
+  - *What was stored and unchanged* — STABLE hash chain + Bitcoin anchor (existing)
+  - *Which weights were running* — model deployment record (new)
+  - *Which binary ran those weights* — TEE measurement (new)
+  - *What inputs produced what output* — inference record (new)
+
+This is not yet full zero-knowledge proof of computation (zkML) — it is the
+tractable near-term path that covers the accountability gap today.
+
 ### Bitcoin anchor (OpenTimestamps)
 
 The MMR root is submitted to OpenTimestamps ([src/anchor.py](../src/anchor.py)),
@@ -157,14 +209,20 @@ returns, buffered events flush automatically *in order*. No events are lost duri
 denied/jammed/air-gapped outages. Agents can optionally heartbeat their buffer
 depth so a dashboard shows DDIL state in real time.
 
-### ROE event schema
+### Structured event schemas *(example domain application)*
 
-Rules-of-Engagement decisions are structured
-([src/roe_schema.py](../src/roe_schema.py)) with mandatory fields a JAG officer
-or investigator can interpret without engineering support: what was decided and
-why, whether a human authorized it (and who), the AI's confidence, the
-information available at decision time, detection→authorization latency, and which
-ROE rule applied.
+STABLE's ledger accepts any JSON payload. For high-stakes or regulated use cases
+it is useful to enforce a structured schema so domain experts — not just engineers
+— can interpret a record. [src/roe_schema.py](../src/roe_schema.py) is one
+example of this pattern, defining typed fields for defense Rules-of-Engagement
+decisions: what was decided, who authorized it, the AI's confidence, the
+information available at decision time, and detection→authorization latency.
+
+This schema is **not a core system requirement** — it is a template. Replace the
+defense-specific fields (`roe_reference`, `weapon_system_id`, etc.) with whatever
+your domain needs. The accountability fields that apply to any supervised AI
+(`human_authorized`, `operator_id`, `ai_confidence`, `information_state`,
+`time_to_authorization_ms`) transfer directly.
 
 ---
 
@@ -221,6 +279,8 @@ function verify(ledger, anchors):
 | `POST` | `/anchor/now` | Stamp the head immediately |
 | `POST` | `/anchor/upgrade` | Force a pending-anchor upgrade check |
 | `POST` | `/events` | (signing) honors `STRICT_SIGNING` |
+| `POST` | `/model/register` | Record a model deployment (weights hash + metadata) |
+| `POST` | `/tee/attest` | Record a TEE attestation quote |
 | `POST` | `/tamper` | **DEMO ONLY** — break the chain for the live demo |
 | `POST` | `/seed` | **DEMO ONLY** — seed realistic signed events |
 | `POST` | `/demo/impersonate` | **DEMO ONLY** — attempt forged attribution, show it rejected |
@@ -246,6 +306,25 @@ def classify_threat(sensor_data):
     ...  # existing code unchanged
 ```
 
+**Record a model deployment at deploy time:**
+```python
+from model_anchor import hash_model_weights, ModelDeploymentRecord, build_deployment_payload
+weights_hash = hash_model_weights("/models/llama-3-70b/")
+client.emit("model_deployment", build_deployment_payload(
+    ModelDeploymentRecord(model_id="llama-3-70b", version="v1.2.3", weights_hash=weights_hash)
+))
+```
+
+**Log every inference call with one decorator:**
+```python
+from adapters.inference_logger import InferenceLogger
+logger = InferenceLogger(client, model_id="llama-3-70b", model_version="v1.2.3")
+
+@logger.log
+def run_inference(prompt):
+    return model.generate(prompt)
+```
+
 **One curl for anything else:**
 ```bash
 curl -X POST http://localhost:8000/events \
@@ -264,6 +343,7 @@ See [DEMO.md](DEMO.md) for runnable example apps built on these adapters.
 | `DEMO_MODE` | `false` | Enables `/tamper`, `/seed`, `/demo/impersonate` |
 | `MOCK_ANCHOR` | `false` | Local mock Bitcoin confirmation (no network) |
 | `MOCK_CONFIRM_DELAY` | `30` | Seconds until a mock anchor "confirms" |
+| `MOCK_TEE` | `false` | Simulated TEE measurement (no hardware required) |
 | `STRICT_SIGNING` | `false` | **Reject any event without a valid, registered signature** |
 | `REQUIRE_PROVISIONED_KEYS` | `false` | **Honor only authority-issued keys** — reject self-enrolled (TOFU) keys at ingest even if the signature is valid. Implies signing. |
 | `ALLOW_AUTO_ENROLL` | `true` | When `false`, new identities cannot self-enroll; keys must be issued via `provision_keypair()` / `register_public_key()` (CAC/PIV / HSM path) |
@@ -295,18 +375,21 @@ change between demo and production. Only the key store and replication harden.
 
 ```
 src/
+  model_anchor.py    model weight hashing + deployment anchoring
+  tee.py             TEE attestation (TDX/SEV/SGX/MOCK) + ledger schema
   ledger.py          hash chain, SQLite store, MMR persistence
   verify.py          verify() — chain + signatures + MMR + anchors
   anchor.py          OpenTimestamps stamping loop (+ mock mode)
   mmr.py             Merkle Mountain Range — O(log n) append + proofs
   merkle.py          legacy full-tree Merkle (reference implementation)
   signing.py         Ed25519 keypairs, sign, verify, identity binding
-  roe_schema.py      ROE decision schema for JAG compliance
+  roe_schema.py      example domain schema (defense ROE decisions — adapt for your use case)
   api.py             HTTP endpoints (FastAPI) + STRICT_SIGNING + API_TOKEN
   adapters/
     client.py        DDIL-resilient signed HTTP client (+ heartbeat)
     logging_handler.py  drop-in Python logging integration
     audit_decorator.py  @audit_log function decorator
+    inference_logger.py InferenceLogger — per-inference record with input hashing
 web/
   index.html         live dashboard
 examples/

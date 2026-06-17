@@ -8,6 +8,8 @@ Endpoints:
   GET  /entries/{seq}/proof     Merkle inclusion proof for one entry (selective disclosure)
   GET  /anchors                 list all anchors with status
   GET  /stream                  SSE stream of new entries (dashboard live feed)
+  POST /model/register          record a model deployment (weights hash + metadata)
+  POST /tee/attest              record a TEE attestation quote
   POST /tamper                  DEMO ONLY (requires DEMO_MODE=true)
   POST /seed                    DEMO ONLY: populate sample events
   POST /anchor/now              trigger an immediate stamp (demo convenience)
@@ -192,6 +194,8 @@ async def info():
         "mock_anchor": MOCK_ANCHOR,
         "strict_signing": STRICT_SIGNING,
         "require_provisioned_keys": REQUIRE_PROVISIONED_KEYS,
+        "model_anchoring": True,
+        "tee_attestation": True,
     }
 
 
@@ -246,6 +250,136 @@ async def append_event(req: EventRequest, request: Request):
     if roe_warning:
         resp["roe_warning"] = roe_warning
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Model deployment anchoring
+# ---------------------------------------------------------------------------
+
+class ModelRegisterRequest(BaseModel):
+    source_id: str                          # deploying system / deployment pipeline
+    model_id: str                           # stable model identifier
+    version: str                            # version, commit, or release tag
+    weights_hash: str                       # "sha256:<64-hex>" of weight file(s)
+    config_hash: str | None = None          # "sha256:<64-hex>" of config/tokenizer files
+    framework: str | None = None            # pytorch | onnx | gguf | etc.
+    parameter_count: str | None = None      # informational: "70B", "13B"
+    provenance: str | None = None           # upstream source (HF model ID, URL)
+    notes: str | None = None
+    signature: str | None = None
+    key_id: str | None = None
+
+
+@app.post("/model/register", status_code=201)
+async def register_model(req: ModelRegisterRequest, request: Request):
+    """
+    Record a model deployment in the ledger.
+
+    The deploying system pre-computes the weights hash (use model_anchor.hash_model_weights)
+    and submits it here. The recorder stores it as an immutable ledger entry — so the
+    chain-of-custody for "which model was running at time T" is provable without giving
+    the recorder access to the weight files themselves.
+
+    Bind this to a TEE attestation (POST /tee/attest) by passing the same model_id in
+    the attestation's report_data to cryptographically link deployment and execution.
+    """
+    _require_auth(request)
+
+    if not req.weights_hash.startswith("sha256:"):
+        raise HTTPException(status_code=422, detail="weights_hash must be 'sha256:<hex>'")
+    if req.config_hash and not req.config_hash.startswith("sha256:"):
+        raise HTTPException(status_code=422, detail="config_hash must be 'sha256:<hex>'")
+
+    payload: dict = {
+        "_schema": "model_deployment_v1",
+        "model_id": req.model_id,
+        "version": req.version,
+        "weights_hash": req.weights_hash,
+    }
+    if req.config_hash:     payload["config_hash"] = req.config_hash
+    if req.framework:       payload["framework"] = req.framework
+    if req.parameter_count: payload["parameter_count"] = req.parameter_count
+    if req.provenance:      payload["provenance"] = req.provenance
+    if req.notes:           payload["notes"] = req.notes
+
+    if req.signature and req.key_id and _SIGNING_AVAILABLE:
+        payload_bytes = canonical_json(payload)
+        if not verify_signature(req.signature, req.key_id, req.source_id, payload_bytes,
+                                require_provisioned=REQUIRE_PROVISIONED_KEYS):
+            raise HTTPException(status_code=403, detail=(
+                f"Signature verification failed for source_id='{req.source_id}'. "
+                "Model registration rejected."
+            ))
+
+    entry = store.append(req.source_id, payload,
+                         signature=req.signature, key_id=req.key_id)
+    _broadcast({"type": "entry", "data": _sanitize(entry)})
+    return {"seq": entry["seq"], "entry_hash": entry["entry_hash"],
+            "model_id": req.model_id, "version": req.version}
+
+
+# ---------------------------------------------------------------------------
+# TEE attestation
+# ---------------------------------------------------------------------------
+
+_TEE_VALID_TYPES = {"TDX", "SEV", "SGX", "MOCK"}
+
+
+class TeeAttestRequest(BaseModel):
+    source_id: str                  # inference service / agent submitting the quote
+    tee_type: str                   # TDX | SEV | SGX | MOCK
+    measurement: str                # hex: MRTD / MRENCLAVE / simulated measurement
+    report_data: str                # hex: user data bound into the quote
+    quote: str = ""                 # hex: full attestation quote (may be empty for MOCK)
+    platform: str | None = None     # informational: CPU/VM identifier
+    signature: str | None = None
+    key_id: str | None = None
+
+
+@app.post("/tee/attest", status_code=201)
+async def record_tee_attestation(req: TeeAttestRequest, request: Request):
+    """
+    Record a TEE attestation quote in the ledger.
+
+    The inference service collects the attestation quote from its platform's TEE
+    driver (use tee.collect_attestation), then submits it here. The recorder
+    stores it as an immutable ledger entry tied to the timestamp.
+
+    Recommended: bind the model weights_hash into report_data so this attestation
+    is cryptographically linked to the model deployment record (POST /model/register).
+
+    In production, the raw quote field can be submitted to Intel DCAP or AMD KDS
+    for independent platform verification.
+    """
+    _require_auth(request)
+
+    if req.tee_type.upper() not in _TEE_VALID_TYPES:
+        raise HTTPException(status_code=422,
+                            detail=f"tee_type must be one of {sorted(_TEE_VALID_TYPES)}")
+
+    payload: dict = {
+        "_schema": "tee_attestation_v1",
+        "tee_type": req.tee_type.upper(),
+        "measurement": req.measurement,
+        "report_data": req.report_data,
+        "quote": req.quote,
+    }
+    if req.platform: payload["platform"] = req.platform
+
+    if req.signature and req.key_id and _SIGNING_AVAILABLE:
+        payload_bytes = canonical_json(payload)
+        if not verify_signature(req.signature, req.key_id, req.source_id, payload_bytes,
+                                require_provisioned=REQUIRE_PROVISIONED_KEYS):
+            raise HTTPException(status_code=403, detail=(
+                f"Signature verification failed for source_id='{req.source_id}'. "
+                "TEE attestation rejected."
+            ))
+
+    entry = store.append(req.source_id, payload,
+                         signature=req.signature, key_id=req.key_id)
+    _broadcast({"type": "entry", "data": _sanitize(entry)})
+    return {"seq": entry["seq"], "entry_hash": entry["entry_hash"],
+            "tee_type": req.tee_type.upper()}
 
 
 @app.get("/keys")

@@ -45,7 +45,7 @@ docker compose up --build   # --build avoids running a stale cached image
 python3 -m pytest tests/ -v
 ```
 
-160+ tests across 8 files:
+228+ tests across 11 files:
 
 - **Hash chain** — tamper detection at every entry, sequence gaps, broken links
 - **MMR** — append, inclusion proofs for all sizes/positions, root recompute, tamper
@@ -55,7 +55,7 @@ python3 -m pytest tests/ -v
 - **API (end-to-end)** — seed→verify, tamper→verify-fails, MMR proof endpoint,
   strict-signing enforcement, token auth, impersonation rejection at ingest
 - **DDIL** — local buffering during outage, ordered flush on reconnect, signatures survive buffering
-- **ROE schema** — required-field validation, autonomous (`human_authorized=false`) records
+- **Domain schema (ROE example)** — structured-payload field validation, `human_authorized=false` autonomous records
 
 ---
 
@@ -93,14 +93,60 @@ in [k8s/](../k8s/); package definitions are [zarf.yaml](../zarf.yaml) and
 
 ## STABLE as a shared UDS capability
 
-The recorder runs in its own trust domain; any app on the cluster opts in with
-two lines of adapter code pointed at the in-cluster Service
-(`stable.stable.svc.cluster.local:8000`). That makes STABLE less an application
-and more a **platform capability** — a tamper-evident ledger every UDS package
-can write to, the way they'd attach a logging sidecar. One recorder, many audited
-apps, one immutable record.
+STABLE is not just an application — it's a **shared accountability capability**
+any app on a UDS cluster can opt into, the way a workload attaches a logging
+sidecar or reaches a secrets service. Deploy one recorder; every AI-enabled app
+on the cluster gets an immutable, signed, Bitcoin-anchorable record in two lines.
+
+```
+   ┌──────────────┐
+   │   app A pod  │──┐
+   └──────────────┘  │      ┌───────────────────────────────────────┐
+   ┌──────────────┐  │      │  STABLE recorder  (namespace: stable) │
+   │   app B pod  │──┼─────▶│  • separate trust domain              │──▶ Bitcoin
+   └──────────────┘  │      │  • write-only ingest API              │
+   ┌──────────────┐  │      │  • one immutable ledger for the whole │
+   │   app C pod  │──┘      │    cluster                            │
+   └──────────────┘         └───────────────────────────────────────┘
+```
+
+Three properties make this a *capability*, not a library:
+
+1. **Separate trust domain.** The recorder runs in its own namespace (`stable`)
+   with its own storage the audited apps cannot reach. Apps get a write-only HTTP
+   API — no modify or delete path. An app (or a compromised agent inside it)
+   cannot rewrite what it already recorded.
+2. **One ledger, cluster-wide.** Every app writes to the same hash-chained,
+   Bitcoin-anchored record. Cross-app provenance lives in one verifiable timeline,
+   not scattered per-service logs.
+3. **Zero crypto for the consumer.** The hash chain, MMR proofs, Ed25519 signing,
+   DDIL buffering, and Bitcoin anchoring all live in the recorder and the thin
+   adapter. The app developer never touches any of it.
+
+The recorder is a `ClusterIP` Service reachable from any pod at
+`http://stable.stable.svc.cluster.local:8000`. Adopt it with one of three patterns
+([ARCHITECTURE.md → Integration](ARCHITECTURE.md#integration--wiring-into-an-existing-system)):
+
+```python
+# Two lines for any Python service using standard logging:
+from adapters import LedgerLogHandler
+logging.getLogger().addHandler(
+    LedgerLogHandler("app-a", "http://stable.stable.svc.cluster.local:8000"))
+```
+
+```python
+# Or explicit client (DDIL-buffered, signed):
+from adapters import LedgerClient
+client = LedgerClient("http://stable.stable.svc.cluster.local:8000", source_id="app-a")
+client.emit("decision", {"action": "HOLD", "confidence": 0.71})
+```
 
 A ready-to-apply consumer example is in
-[k8s/example-consumer.yaml](../k8s/example-consumer.yaml). The full vision,
-architecture, adoption pattern, and enrollment model are in
-**[UDS_CAPABILITY.md](UDS_CAPABILITY.md)**.
+[k8s/example-consumer.yaml](../k8s/example-consumer.yaml).
+
+**Enrollment.** The hardened recorder runs with `STRICT_SIGNING=true`: it rejects
+any event whose signature isn't from a key whose registered `source_id` matches
+the claimed sender. In demo mode keys self-enroll on first use. In production,
+enrollment is gated by a provisioning authority (CAC/PIV, enrollment CA, or HSM)
+— the signing path is identical, only key issuance hardens. See
+[ARCHITECTURE.md → Trust model](ARCHITECTURE.md#trust-model-read-this-first).
