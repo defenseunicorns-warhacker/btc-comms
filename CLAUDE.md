@@ -118,8 +118,8 @@ DEMO_MODE=true MOCK_ANCHOR=true uv run uvicorn src.api:app --reload
 ```bash
 # After editing pyproject.toml, regenerate the lock file and frozen exports
 uv lock
-uv export --frozen --no-dev -o requirements.txt
-uv export --frozen --group dev -o requirements-dev.txt
+uv export --frozen --no-dev --no-emit-project -o requirements.txt
+uv export --frozen --group dev --no-emit-project -o requirements-dev.txt
 ```
 
 The frozen `requirements.txt` (with SHA-256 hashes) is what the Dockerfile uses — pip is kept there for accessibility. Do not edit `requirements.txt` by hand.
