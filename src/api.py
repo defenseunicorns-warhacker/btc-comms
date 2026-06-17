@@ -10,6 +10,7 @@ Endpoints:
   GET  /stream                  SSE stream of new entries (dashboard live feed)
   POST /model/register          record a model deployment (weights hash + metadata)
   POST /tee/attest              record a TEE attestation quote
+  POST /audit/k8s               Kubernetes API server audit webhook receiver
   POST /tamper                  DEMO ONLY (requires DEMO_MODE=true)
   POST /seed                    DEMO ONLY: populate sample events
   POST /anchor/now              trigger an immediate stamp (demo convenience)
@@ -196,6 +197,7 @@ async def info():
         "require_provisioned_keys": REQUIRE_PROVISIONED_KEYS,
         "model_anchoring": True,
         "tee_attestation": True,
+        "k8s_audit_webhook": True,
     }
 
 
@@ -380,6 +382,84 @@ async def record_tee_attestation(req: TeeAttestRequest, request: Request):
     _broadcast({"type": "entry", "data": _sanitize(entry)})
     return {"seq": entry["seq"], "entry_hash": entry["entry_hash"],
             "tee_type": req.tee_type.upper()}
+
+
+# ---------------------------------------------------------------------------
+# Kubernetes audit webhook receiver
+# ---------------------------------------------------------------------------
+
+# Mutation verbs we care about — read-only verbs (get/list/watch) are noise.
+_K8S_MUTATION_VERBS = {"create", "update", "patch", "delete"}
+
+# K8s resources too chatty to record by default (high-frequency system churn).
+_K8S_SKIP_RESOURCES = {"events", "leases", "endpointslices", "endpoints"}
+
+
+@app.post("/audit/k8s", status_code=200)
+async def k8s_audit_webhook(request: Request):
+    """
+    Kubernetes API server audit webhook receiver.
+
+    The k0s/kube-apiserver posts an EventList here for every audit event that
+    matches the cluster's audit policy. We filter to mutation verbs and forward
+    each matching event to the ledger as a signed, hash-chained record.
+
+    The original Kubernetes event timestamp is preserved in the payload so the
+    STABLE record reflects when the operation actually occurred, not when it
+    was forwarded.
+
+    Configure the API server with:
+      audit-webhook-config-file: /etc/k0s/audit-webhook.yaml
+      audit-webhook-batch-max-wait: 5s
+
+    The webhook config should point at:
+      http://stable.stable-system.svc.cluster.local:8000/audit/k8s
+    """
+    body = await request.json()
+    items = body.get("items", [])
+
+    accepted = 0
+    skipped = 0
+
+    for event in items:
+        verb = event.get("verb", "").lower()
+        obj_ref = event.get("objectRef", {})
+        resource = obj_ref.get("resource", "").lower()
+
+        if verb not in _K8S_MUTATION_VERBS:
+            skipped += 1
+            continue
+        if resource in _K8S_SKIP_RESOURCES:
+            skipped += 1
+            continue
+
+        user = event.get("user", {})
+        status = event.get("responseStatus", {})
+
+        payload = {
+            "event_type": f"k8s.{resource}.{verb}",
+            "original_timestamp": event.get("requestReceivedTimestamp") or event.get("stageTimestamp"),
+            "audit_id": event.get("auditID"),
+            "verb": verb,
+            "resource": resource,
+            "resource_version": obj_ref.get("apiVersion"),
+            "namespace": obj_ref.get("namespace"),
+            "name": obj_ref.get("name"),
+            "uid": obj_ref.get("uid"),
+            "username": user.get("username"),
+            "user_groups": user.get("groups", []),
+            "source_ips": event.get("sourceIPs", []),
+            "response_code": status.get("code"),
+            "stage": event.get("stage"),
+        }
+        # Drop None values to keep the ledger payload clean
+        payload = {k: v for k, v in payload.items() if v is not None}
+
+        entry = store.append("k8s-audit", payload)
+        _broadcast({"type": "entry", "data": _sanitize(entry)})
+        accepted += 1
+
+    return {"accepted": accepted, "skipped": skipped}
 
 
 @app.get("/keys")
