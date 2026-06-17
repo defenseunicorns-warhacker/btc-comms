@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Defense AI — Live Demo</title>
+  <style>
+    :root {
+      --bg:     #0d1117;
+      --bg2:    #161b22;
+      --bg3:    #21262d;
+      --border: #30363d;
+      --text:   #c9d1d9;
+      --muted:  #8b949e;
+      --green:  #3fb950;
+      --red:    #f85149;
+      --yellow: #d29922;
+      --blue:   #58a6ff;
+      --purple: #bc8cff;
+      --orange: #ffa657;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+      font-size: 13px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Top bar ─────────────────────────────────────────────────────────── */
+    header {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+    header h1 { font-size: 14px; font-weight: 600; white-space: nowrap; }
+    .tag {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .header-right {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-right label { font-size: 11px; color: var(--muted); }
+    .header-right input {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      width: 200px;
+    }
+    .conn-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: all 0.3s;
+      flex-shrink: 0;
+    }
+    .conn-dot.live         { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .conn-dot.disconnected { background: var(--red);   box-shadow: 0 0 6px var(--red);   }
+
+    /* ── Split layout ────────────────────────────────────────────────────── */
+    .split { display: flex; flex: 1; overflow: hidden; }
+
+    .panel-left  { flex: 1.05; display: flex; flex-direction: column; border-right: 2px solid var(--border); overflow: hidden; min-width: 0; }
+    .panel-right { flex: 0.95; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+    .panel-hdr {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 7px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      flex-shrink: 0;
+    }
+    .panel-hdr .title { color: var(--text); font-size: 11px; }
+    .badge {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    /* ── Controls bar ────────────────────────────────────────────────────── */
+    .controls {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .btn {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: inherit;
+      font-size: 12px;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+    .btn:hover  { border-color: var(--blue);  color: var(--blue);  }
+    .btn.on     { background: rgba(63,185,80,0.12); border-color: var(--green); color: var(--green); }
+    .btn.sm     { font-size: 10px; padding: 2px 8px; }
+    .stat       { font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .stat b     { color: var(--text); }
+    input[type="range"] { width: 76px; accent-color: var(--green); cursor: pointer; }
+
+    /* ── Agent cards ─────────────────────────────────────────────────────── */
+    .agents-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .agent-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      min-height: 52px;
+      transition: border-color 0.18s, background 0.18s;
+    }
+    .agent-card.active { border-color: var(--green); }
+    .agent-card.firing { border-color: var(--orange); background: rgba(255,166,87,0.04); }
+    .agent-card.idle   {}
+    .ac-name   { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }
+    .ac-status { font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ac-status.idle { color: var(--muted); font-style: italic; }
+
+    /* ── Activity feed ───────────────────────────────────────────────────── */
+    .feed-hdr {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 5px 16px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      flex-shrink: 0;
+    }
+    .feed-wrap { flex: 1; overflow-y: auto; }
+    .feed-row {
+      display: grid;
+      grid-template-columns: 56px 120px 1fr;
+      gap: 0;
+      padding: 5px 16px;
+      border-bottom: 1px solid rgba(48,54,61,0.45);
+      animation: rowIn 0.22s ease;
+    }
+    .feed-row:hover { background: var(--bg2); }
+    .feed-ts    { font-size: 10px; color: var(--muted); padding-top: 1px; }
+    .feed-agent { font-size: 10px; padding-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 8px; }
+    .feed-msg   { font-size: 11px; color: var(--text); }
+
+    /* ── Verify banner (right panel) ─────────────────────────────────────── */
+    .verify-banner {
+      padding: 8px 16px;
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid var(--border);
+      transition: all 0.3s;
+      flex-shrink: 0;
+    }
+    .verify-banner.ok     { background: rgba(63,185,80,0.10); color: var(--green); border-left: 3px solid var(--green); }
+    .verify-banner.broken { background: rgba(248,81,73,0.10); color: var(--red);   border-left: 3px solid var(--red);   }
+    .verify-banner.wait   { background: var(--bg2); color: var(--muted); border-left: 3px solid var(--border); }
+
+    /* ── Ledger entries (right panel) ────────────────────────────────────── */
+    .ledger-list { flex: 1; overflow-y: auto; }
+    .entry-row {
+      display: grid;
+      grid-template-columns: 36px 1fr 90px;
+      gap: 6px;
+      padding: 5px 14px;
+      border-bottom: 1px solid rgba(48,54,61,0.45);
+      align-items: start;
+      animation: rowIn 0.22s ease;
+    }
+    .entry-row:hover { background: var(--bg2); }
+    .entry-row.genesis { color: var(--muted); font-style: italic; }
+    .entry-row.tampered { background: rgba(248,81,73,0.07); border-left: 2px solid var(--red); }
+    .e-seq  { font-size: 10px; color: var(--muted); padding-top: 1px; }
+    .e-body {}
+    .e-desc { font-size: 11px; color: var(--text); }
+    .e-hash { font-size: 9px; color: rgba(139,148,158,0.5); margin-top: 1px; }
+    .e-src  { font-size: 10px; color: var(--muted); text-align: right; padding-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* ── Agent strip (right panel bottom) ────────────────────────────────── */
+    .agent-strip {
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      padding: 6px 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+      flex-shrink: 0;
+      min-height: 32px;
+    }
+    .agent-pill {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 2px 9px;
+      font-size: 10px;
+      color: var(--muted);
+      transition: all 0.2s;
+    }
+    .agent-pill.live { border-color: rgba(63,185,80,0.6); color: var(--green); }
+
+    .empty { padding: 24px 16px; text-align: center; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+    @keyframes rowIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════ TOP BAR ══════════════════════ -->
+<header>
+  <h1>Defense AI System</h1>
+  <span class="tag">4 agents · Ed25519 signed</span>
+  <span class="tag">STABLE accountability</span>
+  <span style="font-size:11px;color:var(--muted)">Watch the ledger populate in real time as the AI system operates</span>
+  <div class="header-right">
+    <label>Ledger</label>
+    <input id="ledgerUrl" type="text" value="http://localhost:8001" />
+    <div class="conn-dot" id="connDot" title="SSE connection to STABLE"></div>
+  </div>
+</header>
+
+<div class="split">
+
+  <!-- ══════════════ LEFT PANEL — AI Defense System ══════════════ -->
+  <div class="panel-left">
+
+    <div class="panel-hdr">
+      <span class="title">AI Defense System</span>
+      <span style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px">threat-classifier · engagement-planner · nav-planner · sensor-fusion</span>
+    </div>
+
+    <div class="controls">
+      <button class="btn" id="runBtn" onclick="toggleRun()">▶ Start</button>
+      <span class="stat">Interval</span>
+      <input type="range" id="intervalSlider" min="500" max="5000" step="250" value="2000"
+             oninput="setInterval_(this.value)" />
+      <span class="stat" id="intervalLbl">2.0 s</span>
+      <span class="stat" style="margin-left:auto">Iter <b id="iterCount">0</b></span>
+      <span class="stat">Events <b id="evtCount">0</b></span>
+      <span class="stat" id="ddilWarn" style="color:var(--yellow);display:none">⚠ DDIL</span>
+    </div>
+
+    <!-- Agent status cards -->
+    <div class="agents-grid">
+      <div class="agent-card idle" id="card-threat">
+        <div class="ac-name">threat-classifier</div>
+        <div class="ac-status idle" id="st-threat">idle</div>
+      </div>
+      <div class="agent-card idle" id="card-engage">
+        <div class="ac-name">engagement-planner</div>
+        <div class="ac-status idle" id="st-engage">idle</div>
+      </div>
+      <div class="agent-card idle" id="card-nav">
+        <div class="ac-name">nav-planner</div>
+        <div class="ac-status idle" id="st-nav">idle</div>
+      </div>
+      <div class="agent-card idle" id="card-sensor">
+        <div class="ac-name">sensor-fusion</div>
+        <div class="ac-status idle" id="st-sensor">idle</div>
+      </div>
+    </div>
+
+    <!-- Activity feed -->
+    <div class="feed-hdr">
+      Activity Log
+      <button class="btn sm" style="margin-left:auto" onclick="clearFeed()">clear</button>
+    </div>
+    <div class="feed-wrap" id="feedWrap">
+      <div class="empty">Press <strong>Start</strong> to begin the simulation.<br>Events will appear here and in the ledger simultaneously.</div>
+    </div>
+
+  </div><!-- /panel-left -->
+
+  <!-- ══════════════ RIGHT PANEL — STABLE Ledger ══════════════ -->
+  <div class="panel-right">
+
+    <div class="panel-hdr">
+      <span class="title">STABLE Accountability Layer</span>
+      <span id="entryBadge" class="badge">0</span>
+      <span style="font-weight:400;text-transform:none;letter-spacing:0;margin-left:2px">entries · live SSE</span>
+    </div>
+
+    <div class="verify-banner wait" id="verifyBanner">
+      — Connecting to accountability layer…
+    </div>
+
+    <div class="ledger-list" id="ledgerList">
+      <div class="empty">Waiting for SSE…<br><small>Make sure STABLE is running on the URL above.</small></div>
+    </div>
+
+    <div class="agent-strip" id="agentStrip">
+      <span style="font-size:10px;color:var(--muted)">No agents seen yet</span>
+    </div>
+
+  </div><!-- /panel-right -->
+
+</div><!-- /split -->
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Utilities
+// ─────────────────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function pct(x) { return x == null ? '?' : Math.round(x * 100) + '%'; }
+
+function humanize(e) {
+  if (e.seq === 0) return 'Ledger genesis — start of the chain';
+  const p = e.payload;
+  if (typeof p !== 'object' || p === null) return String(p).slice(0, 72);
+  const t = p.type || p.event_type || p.event || p.action;
+  switch (t) {
+    case 'threat_detected':
+      return `Threat: ${p.class ?? '?'} at ${p.bearing ?? '?'}° · ${p.range_m ?? '?'}m · conf ${pct(p.confidence)}`;
+    case 'roe_decision':
+      return `ROE: ${p.final_action ?? p.decision_type ?? '?'}` +
+             (p.human_authorized === false ? ' — UNATTENDED'
+            : p.human_authorized ? ` — human auth (${p.operator_id ?? '?'})` : '');
+    case 'route_computed':
+      return `Nav route: ${p.waypoints ?? '?'} waypoints · fuel ${Math.round(p.fuel_pct ?? 0)}%` +
+             (p.threat_avoidance_active ? ' · avoidance ON' : '');
+    case 'sensor_ping':
+      return `Sensor ${p.sensor_id ?? ''} · az ${p.azimuth ?? '?'}° · range ${p.range_m ?? '?'}m`;
+    case 'log_record':
+      return `Log [${p.level ?? '?'}]: ${String(p.message ?? '').slice(0, 60)}`;
+    case 'TAMPERED':
+      return '⚠ FORGED CONTENT — injected by adversary';
+    default:
+      return t ? String(t) : JSON.stringify(p).slice(0, 72);
+  }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config
+// ─────────────────────────────────────────────────────────────────────────────
+const qp = new URLSearchParams(location.search);
+let LEDGER = (qp.get('ledger') || document.getElementById('ledgerUrl').value).replace(/\/$/, '');
+document.getElementById('ledgerUrl').value = LEDGER;
+
+document.getElementById('ledgerUrl').addEventListener('change', e => {
+  LEDGER = e.target.value.replace(/\/$/, '');
+  reconnectSSE();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SSE — right panel live feed
+// ─────────────────────────────────────────────────────────────────────────────
+let es = null;
+let sseReconnTimer = null;
+let entries = [];       // newest first
+let agents = {};        // source_id -> last seen ms
+let brokenSeqs = new Set();
+
+function connectSSE() {
+  const dot = document.getElementById('connDot');
+  try {
+    es = new EventSource(LEDGER + '/stream');
+  } catch (_) {
+    dot.className = 'conn-dot disconnected';
+    sseReconnTimer = setTimeout(connectSSE, 3000);
+    return;
+  }
+
+  es.onopen = () => { dot.className = 'conn-dot live'; };
+
+  es.addEventListener('snapshot', ev => {
+    const d = JSON.parse(ev.data);
+    // snapshot delivers oldest-first; reverse so our array is newest-first
+    entries = [...(d.entries || [])].reverse();
+    brokenSeqs.clear();
+    (d.agents || []).forEach(a => { agents[a.source_id] = Date.now(); });
+    renderLedger();
+    renderAgentStrip();
+  });
+
+  es.addEventListener('entry', ev => {
+    const entry = JSON.parse(ev.data);
+    entries.unshift(entry);
+    document.getElementById('entryBadge').textContent = entries.length;
+    renderLedger();
+  });
+
+  es.addEventListener('verify', ev => {
+    const r = JSON.parse(ev.data);
+    updateVerifyBanner(r);
+    brokenSeqs.clear();
+    if (!r.ok && r.broken_at != null) brokenSeqs.add(r.broken_at);
+    renderLedger();
+  });
+
+  es.addEventListener('agent_status', ev => {
+    const a = JSON.parse(ev.data);
+    agents[a.source_id] = Date.now();
+    renderAgentStrip();
+  });
+
+  es.onerror = () => {
+    dot.className = 'conn-dot disconnected';
+    if (es) { es.close(); es = null; }
+    sseReconnTimer = setTimeout(connectSSE, 3000);
+  };
+}
+
+function reconnectSSE() {
+  if (es) { es.close(); es = null; }
+  if (sseReconnTimer) { clearTimeout(sseReconnTimer); }
+  connectSSE();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Right panel rendering
+// ─────────────────────────────────────────────────────────────────────────────
+function updateVerifyBanner(r) {
+  const b = document.getElementById('verifyBanner');
+  if (r.ok) {
+    b.className = 'verify-banner ok';
+    let txt = `✓ CHAIN INTACT — ${r.verified_entries} entries verified`;
+    if (r.externally_anchored_through != null)
+      txt += ` · ⚓ anchored through #${r.externally_anchored_through}`;
+    b.textContent = txt;
+  } else {
+    b.className = 'verify-banner broken';
+    b.textContent = `✖ TAMPERED — break at seq #${r.broken_at} · ${r.reason || ''}`;
+  }
+}
+
+function renderLedger() {
+  const list = document.getElementById('ledgerList');
+  document.getElementById('entryBadge').textContent = entries.length;
+
+  if (!entries.length) {
+    list.innerHTML = '<div class="empty">No entries yet — start the simulation.</div>';
+    return;
+  }
+
+  list.innerHTML = entries.slice(0, 300).map(e => {
+    const broken  = brokenSeqs.has(e.seq);
+    const genesis = e.seq === 0;
+    const cls     = broken ? 'tampered' : genesis ? 'genesis' : '';
+    const short   = e.entry_hash ? e.entry_hash.slice(0,6) + '…' + e.entry_hash.slice(-4) : '';
+    const src     = genesis ? 'system' : (e.source_id || '—');
+    return `<div class="entry-row ${cls}">
+      <span class="e-seq">#${e.seq}</span>
+      <div class="e-body">
+        <div class="e-desc">${esc(humanize(e))}</div>
+        <div class="e-hash">${esc(short)}</div>
+      </div>
+      <span class="e-src">${esc(src)}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderAgentStrip() {
+  const strip = document.getElementById('agentStrip');
+  const now   = Date.now();
+  const live  = Object.entries(agents).filter(([, t]) => now - t < 12000);
+  if (!live.length) {
+    strip.innerHTML = '<span style="font-size:10px;color:var(--muted)">No agents seen yet</span>';
+    return;
+  }
+  strip.innerHTML = live.map(([id]) =>
+    `<span class="agent-pill live">${esc(id)}</span>`
+  ).join('');
+}
+
+// Refresh agent strip every 5 s to age out stale entries
+setInterval(renderAgentStrip, 5000);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Left panel — simulation
+// ─────────────────────────────────────────────────────────────────────────────
+let running      = false;
+let simTimer     = null;
+let simInterval  = 2000;
+let iteration    = 0;
+let evtCount     = 0;
+let feedEmpty    = true;
+
+function card(id, msg, state) {
+  const c = document.getElementById('card-' + id);
+  const s = document.getElementById('st-' + id);
+  if (!c || !s) return;
+  c.className = 'agent-card ' + state;
+  s.className = 'ac-status' + (state === 'idle' ? ' idle' : '');
+  s.textContent = msg;
+}
+
+function feedRow(agentId, color, msg) {
+  const wrap = document.getElementById('feedWrap');
+  if (feedEmpty) { wrap.innerHTML = ''; feedEmpty = false; }
+
+  const ts = new Date().toTimeString().slice(0, 8);
+  const div = document.createElement('div');
+  div.className = 'feed-row';
+  div.innerHTML =
+    `<span class="feed-ts">${ts}</span>` +
+    `<span class="feed-agent" style="color:${color}">${esc(agentId)}</span>` +
+    `<span class="feed-msg">${esc(msg)}</span>`;
+
+  // Insert at top (newest first)
+  wrap.insertBefore(div, wrap.firstChild);
+
+  // Cap at 300 rows
+  while (wrap.children.length > 300) wrap.removeChild(wrap.lastChild);
+}
+
+async function post(sourceId, eventType, payload) {
+  try {
+    const r = await fetch(LEDGER + '/events', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        source_id: sourceId,
+        payload:   { type: eventType, ...payload },
+      }),
+    });
+    if (r.ok) {
+      evtCount++;
+      document.getElementById('evtCount').textContent = evtCount;
+    }
+    document.getElementById('ddilWarn').style.display = 'none';
+  } catch (_) {
+    // Ledger unreachable — surface the DDIL warning
+    document.getElementById('ddilWarn').style.display = '';
+  }
+}
+
+async function iterate() {
+  iteration++;
+  document.getElementById('iterCount').textContent = iteration;
+
+  const R = Math.random;
+
+  // ── 1. Threat classifier ─────────────────────────────────────────────────
+  const confidence  = 0.52 + R() * 0.46;
+  const threatClass = ['UAS', 'ground_vehicle', 'personnel', 'none'][Math.floor(R() * 4)];
+  const bearing     = Math.floor(R() * 360);
+  const rangeM      = 200 + Math.floor(R() * 1800);
+  const sensorId    = `FLIR-${1 + Math.floor(R() * 9)}`;
+  const confPct     = Math.round(confidence * 100);
+
+  card('threat', 'Classifying…', 'firing');
+  await post('threat-classifier', 'threat_detected', {
+    class:      threatClass,
+    confidence: Math.round(confidence * 1000) / 1000,
+    bearing,
+    range_m:    rangeM,
+    sensor_ids: [sensorId, 'RADAR-2'],
+  });
+  card('threat', `${threatClass} — ${confPct}% conf · ${rangeM} m`, 'active');
+  feedRow('threat-classifier', 'var(--purple)',
+    `${threatClass} at ${bearing}° · ${rangeM} m · confidence ${confPct}%`);
+
+  await sleep(70);
+
+  // ── 2. Engagement planner ────────────────────────────────────────────────
+  const inEnvelope  = confidence > 0.75 && rangeM < 1500;
+  const recommended = inEnvelope && confidence > 0.85 ? 'ENGAGE_READY' : 'HOLD_FIRE';
+  const humanAuth   = recommended === 'ENGAGE_READY' && R() > 0.25;
+  const opId        = humanAuth ? `OP-${100 + Math.floor(R() * 900)}` : null;
+  const finalAction = humanAuth ? recommended : 'HOLD_FIRE';
+  const roeRef      = ['ROE-ALPHA-7', 'ROE-BRAVO-2', 'ROE-DELTA-1'][Math.floor(R() * 3)];
+  const cde         = ['LOW', 'MEDIUM', 'UNKNOWN'][Math.floor(R() * 3)];
+
+  card('engage', 'Computing envelope…', 'firing');
+  await post('engagement-planner', 'roe_decision', {
+    decision_type:            recommended,
+    final_action:             finalAction,
+    human_authorized:         humanAuth,
+    operator_id:              opId,
+    target_id:                `T-${String(iteration).padStart(4, '0')}`,
+    ai_confidence:            Math.round(confidence * 1000) / 1000,
+    roe_reference:            roeRef,
+    within_envelope:          inEnvelope,
+    collateral_damage_estimate: cde,
+    time_to_authorization_ms: Math.floor(confidence * 1000 + 500 + R() * 2500),
+  });
+  const authStr  = humanAuth ? `human auth (${opId})` : 'UNATTENDED';
+  const engColor = finalAction === 'ENGAGE_READY' ? 'var(--red)' : 'var(--green)';
+  card('engage', `${finalAction} · ${authStr}`, 'active');
+  feedRow('engagement-planner', engColor, `${finalAction} · ${authStr} · CDE ${cde}`);
+
+  await sleep(70);
+
+  // ── 3. Nav planner ───────────────────────────────────────────────────────
+  const waypoints = 2 + Math.floor(R() * 7);
+  const fuelPct   = Math.round(30 + R() * 68);
+  const avoidance = R() > 0.5;
+
+  card('nav', 'Planning route…', 'firing');
+  await post('nav-planner', 'route_computed', {
+    waypoints,
+    fuel_pct:               fuelPct,
+    threat_avoidance_active: avoidance,
+    iteration,
+  });
+  card('nav', `${waypoints} waypoints · fuel ${fuelPct}%`, 'active');
+  feedRow('nav-planner', 'var(--blue)',
+    `${waypoints} waypoints · fuel ${fuelPct}%${avoidance ? ' · avoidance ON' : ''}`);
+
+  await sleep(70);
+
+  // ── 4. Sensor fusion ─────────────────────────────────────────────────────
+  const azimuth = (iteration * 37) % 360;
+  const sfRange = 500 + Math.floor(R() * 3000);
+
+  card('sensor', 'Fusing sensors…', 'firing');
+  await post('sensor-fusion', 'sensor_ping', {
+    sensor_id: sensorId,
+    azimuth,
+    range_m:  sfRange,
+    reading:  iteration,
+  });
+  card('sensor', `${sensorId} · az ${azimuth}° · ${sfRange} m`, 'active');
+  feedRow('sensor-fusion', 'var(--orange)', `${sensorId} · azimuth ${azimuth}° · range ${sfRange} m`);
+}
+
+async function tick() {
+  if (!running) return;
+  try { await iterate(); } catch (e) { console.warn('iterate error:', e); }
+  if (running) simTimer = setTimeout(tick, simInterval);
+}
+
+function toggleRun() {
+  running = !running;
+  const btn = document.getElementById('runBtn');
+  if (running) {
+    btn.textContent = '⏸ Pause';
+    btn.className   = 'btn on';
+    tick();
+  } else {
+    btn.textContent = '▶ Start';
+    btn.className   = 'btn';
+    clearTimeout(simTimer);
+    ['threat','engage','nav','sensor'].forEach(id => card(id, 'idle', 'idle'));
+  }
+}
+
+function setInterval_(v) {
+  simInterval = parseInt(v, 10);
+  document.getElementById('intervalLbl').textContent = (simInterval / 1000).toFixed(1) + ' s';
+}
+
+function clearFeed() {
+  feedEmpty = true;
+  document.getElementById('feedWrap').innerHTML =
+    '<div class="empty">Feed cleared.</div>';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────────────────────────────────────
+connectSSE();
+</script>
+</body>
+</html>

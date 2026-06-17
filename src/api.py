@@ -18,15 +18,18 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-# Make the flat module layout (ledger, verify, anchor, …) importable no matter
-# how the app is launched: `uvicorn src.api:app` from the repo root, `uvicorn
-# api:app` from inside src/, or in the Docker image. Without this, the
-# documented quickstart fails with ModuleNotFoundError: No module named 'ledger'.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Local-dev fallback: add src/ to sys.path when launched via
+# `uvicorn src.api:app` from the project root without PYTHONPATH set.
+# Docker sets PYTHONPATH=/app/src; pyproject.toml handles pytest.
+_src = os.path.dirname(os.path.abspath(__file__))
+if _src not in sys.path:
+    sys.path.insert(0, _src)
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,13 +38,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from ledger import LedgerStore
+from ledger import LedgerStore, canonical_json, sha256, payload_hash as _payload_hash
 from verify import verify as run_verify
 from anchor import AnchorLoop, _stamp_mock, _upgrade_mock
 import mmr as _mmr
 from roe_schema import validate_roe_payload
 try:
-    from signing import verify_signature, get_public_key, list_keys
+    from signing import verify_signature, get_public_key, list_keys, get_or_create_keypair, sign
     _SIGNING_AVAILABLE = True
 except ImportError:
     _SIGNING_AVAILABLE = False
@@ -59,13 +62,18 @@ DEMO_MODE = _flag("DEMO_MODE")
 MOCK_ANCHOR = _flag("MOCK_ANCHOR")
 DB_PATH = os.getenv("DB_PATH", "ledger.db")
 STAMP_INTERVAL = int(os.getenv("STAMP_INTERVAL", "30"))
-UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "15"))  # check more often in mock mode
+UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "30"))
 
 # Enforcement knobs (off by default so the demo is frictionless).
-#   STRICT_SIGNING=true  → reject any event without a valid registered signature.
-#   API_TOKEN=<secret>   → require Bearer/X-API-Key on all mutating endpoints.
+#   STRICT_SIGNING=true           → reject any event without a valid registered signature.
+#   REQUIRE_PROVISIONED_KEYS=true → additionally reject self-enrolled (TOFU) keys; only
+#                                   authority-provisioned keys are honored. Implies signing.
+#   API_TOKEN=<secret>            → require Bearer/X-API-Key on all mutating endpoints.
 STRICT_SIGNING = _flag("STRICT_SIGNING")
+REQUIRE_PROVISIONED_KEYS = _flag("REQUIRE_PROVISIONED_KEYS")
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
+# Restrict in production: CORS_ORIGINS=https://dashboard.example.com
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",")]
 
 # ---------------------------------------------------------------------------
 # Shared state
@@ -73,7 +81,10 @@ API_TOKEN = os.getenv("API_TOKEN", "").strip()
 
 store: LedgerStore
 anchor_loop: AnchorLoop
+_sse_lock = threading.Lock()
 _sse_queues: list[asyncio.Queue] = []
+# Latest DDIL connectivity heartbeat per agent (in-memory telemetry, not ledger state).
+_agent_status: dict[str, dict] = {}
 
 
 def _require_auth(request: Request):
@@ -98,7 +109,9 @@ def _require_auth(request: Request):
 
 def _broadcast(event: dict):
     """Push an event to all active SSE subscribers."""
-    for q in list(_sse_queues):
+    with _sse_lock:
+        queues = list(_sse_queues)
+    for q in queues:
         try:
             q.put_nowait(event)
         except asyncio.QueueFull:
@@ -150,7 +163,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -169,6 +182,19 @@ async def root():
     return {"status": "ok", "demo_mode": DEMO_MODE, "mock_anchor": MOCK_ANCHOR}
 
 
+@app.get("/info")
+async def info():
+    """Runtime config for the dashboard (JSON). `/` serves the HTML dashboard,
+    so the front-end reads its feature flags from here, not from `/`."""
+    return {
+        "status": "ok",
+        "demo_mode": DEMO_MODE,
+        "mock_anchor": MOCK_ANCHOR,
+        "strict_signing": STRICT_SIGNING,
+        "require_provisioned_keys": REQUIRE_PROVISIONED_KEYS,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Core endpoints
 # ---------------------------------------------------------------------------
@@ -184,24 +210,26 @@ class EventRequest(BaseModel):
 async def append_event(req: EventRequest, request: Request):
     _require_auth(request)
 
-    # Strict mode: every event MUST carry a valid, registered signature.
-    if STRICT_SIGNING:
+    # Strict / provisioned modes: every event MUST carry a valid, registered signature.
+    if STRICT_SIGNING or REQUIRE_PROVISIONED_KEYS:
         if not _SIGNING_AVAILABLE:
-            raise HTTPException(status_code=503, detail="STRICT_SIGNING set but signing module unavailable")
+            raise HTTPException(status_code=503, detail="Signature enforcement enabled but signing module unavailable")
         if not (req.signature and req.key_id):
             raise HTTPException(status_code=403, detail=(
-                "STRICT_SIGNING enabled — unsigned events are rejected. "
+                "Signature enforcement enabled — unsigned events are rejected. "
                 "Provide signature + key_id."
             ))
 
-    # Verify signature at ingest if provided — reject forged attribution
+    # Verify signature at ingest if provided — reject forged attribution. When
+    # REQUIRE_PROVISIONED_KEYS is set, also reject self-enrolled (TOFU) keys: only
+    # keys issued by the provisioning authority are honored.
     if req.signature and req.key_id and _SIGNING_AVAILABLE:
-        from ledger import canonical_json
         payload_bytes = canonical_json(req.payload)
-        if not verify_signature(req.signature, req.key_id, req.source_id, payload_bytes):
+        if not verify_signature(req.signature, req.key_id, req.source_id, payload_bytes,
+                                require_provisioned=REQUIRE_PROVISIONED_KEYS):
             raise HTTPException(status_code=403, detail=(
                 f"Signature verification failed for source_id='{req.source_id}'. "
-                "Event rejected — forged attribution detected."
+                "Event rejected — forged attribution or unprovisioned key."
             ))
 
     # ROE schema validation — warn but don't reject (backwards-compatible)
@@ -242,8 +270,7 @@ async def verify_chain():
 
 @app.get("/entries")
 async def list_entries(limit: int = 200, offset: int = 0):
-    all_entries = store.get_all_entries()
-    page = all_entries[offset: offset + limit]
+    page = store.get_entries_range(min(limit, 1000), offset)
     return [_sanitize(e) for e in page]
 
 
@@ -258,11 +285,14 @@ async def get_mmr_proof(seq: int):
     is required.
 
     Response includes:
-      entry        — the entry itself (share only this + the proof, not the full ledger)
-      proof        — {type:"mmr", leaf_hash, path, peak_hashes, peak_index, leaf_index, leaf_count}
-      anchor       — the most recent anchor whose MMR root covers this entry
-      valid        — whether the proof verifies locally right now
-      mmr_root     — the root the proof computes to
+      entry            — the entry itself
+      proof            — {type:"mmr", leaf_hash, path, peak_hashes, peak_index, leaf_index, leaf_count}
+      anchor           — the most recent anchor whose MMR root covers this entry
+      valid            — True only if payload integrity, entry_hash integrity, AND MMR inclusion all pass
+      payload_hash_ok  — payload still matches its stored hash (detects payload tampering)
+      entry_hash_ok    — entry_hash still matches the recomputed value (detects field tampering)
+      mmr_inclusion_ok — entry_hash is present in the MMR tree
+      mmr_root         — the root the proof computes to
     """
     entry = store.get_entry(seq)
     if entry is None:
@@ -273,7 +303,27 @@ async def get_mmr_proof(seq: int):
     except (IndexError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    valid, computed_root = _mmr.verify_proof(entry["entry_hash"], proof)
+    # 1. Verify payload still matches its stored hash.
+    #    A tampered payload leaves entry_hash intact, so MMR inclusion alone cannot
+    #    catch this — the content check is what catches it.
+    payload = entry["payload"]
+    computed_ph = _payload_hash(payload) if isinstance(payload, dict) else sha256(payload.encode())
+    payload_hash_ok = computed_ph == entry["payload_hash"]
+
+    # 2. Verify entry_hash still matches what the stored fields hash to.
+    recomputed_eh = sha256(canonical_json({
+        "seq": entry["seq"],
+        "timestamp": entry["timestamp"],
+        "source_id": entry["source_id"],
+        "payload_hash": entry["payload_hash"],
+        "prev_hash": entry["prev_hash"],
+    }))
+    entry_hash_ok = recomputed_eh == entry["entry_hash"]
+
+    # 3. Verify this entry_hash is present in the MMR tree.
+    mmr_inclusion_ok, computed_root = _mmr.verify_proof(entry["entry_hash"], proof)
+
+    valid = payload_hash_ok and entry_hash_ok and mmr_inclusion_ok
 
     # Find the best anchor (highest confirmed, else highest pending) that covers this seq
     anchors = store.get_all_anchors()
@@ -289,6 +339,9 @@ async def get_mmr_proof(seq: int):
         "proof": proof,
         "anchor": best_anchor,
         "valid": valid,
+        "payload_hash_ok": payload_hash_ok,
+        "entry_hash_ok": entry_hash_ok,
+        "mmr_inclusion_ok": mmr_inclusion_ok,
         "mmr_root": computed_root,
         "root_matches_anchor": root_matches,
     }
@@ -307,7 +360,8 @@ async def list_anchors():
 @app.get("/stream")
 async def event_stream(request: Request):
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-    _sse_queues.append(queue)
+    with _sse_lock:
+        _sse_queues.append(queue)
 
     async def generator():
         try:
@@ -315,6 +369,7 @@ async def event_stream(request: Request):
             yield {"event": "snapshot", "data": json.dumps({
                 "entries": [_sanitize(e) for e in store.get_all_entries()],
                 "anchors": [_anchor_out(a) for a in store.get_all_anchors()],
+                "agents": list(_agent_status.values()),
             })}
 
             while True:
@@ -326,9 +381,43 @@ async def event_stream(request: Request):
                 except asyncio.TimeoutError:
                     yield {"event": "heartbeat", "data": "{}"}
         finally:
-            _sse_queues.remove(queue)
+            with _sse_lock:
+                try:
+                    _sse_queues.remove(queue)
+                except ValueError:
+                    pass
 
     return EventSourceResponse(generator())
+
+
+# ---------------------------------------------------------------------------
+# Agent connectivity (DDIL telemetry — separate from the ledger)
+# ---------------------------------------------------------------------------
+
+class AgentHeartbeat(BaseModel):
+    source_id: str
+    buffered: int = 0
+    key_id: str | None = None
+
+
+@app.post("/agent/heartbeat")
+async def agent_heartbeat(hb: AgentHeartbeat):
+    """Agents report their local DDIL buffer depth so the dashboard can show
+    connectivity in real time. In-memory telemetry only — never touches the ledger."""
+    status = {
+        "source_id": hb.source_id,
+        "buffered": max(0, hb.buffered),
+        "key_id": hb.key_id,
+        "ts": time.time(),
+    }
+    _agent_status[hb.source_id] = status
+    _broadcast({"type": "agent_status", "data": status})
+    return {"ok": True}
+
+
+@app.get("/agent/status")
+async def agent_status():
+    return list(_agent_status.values())
 
 
 # ---------------------------------------------------------------------------
@@ -403,14 +492,53 @@ async def seed_events(request: Request, n: int = 10):
     ]
     import random
     random.seed(42)
+    # Per-agent signing so the demo's primary populate path exercises the real
+    # Ed25519 attribution flow (otherwise seeded entries show as unsigned).
     results = []
     for i in range(n):
         agent = agents[i % len(agents)]
         payload = actions[i % len(actions)]
-        entry = store.append(agent, payload)
+        signature = key_id = None
+        if _SIGNING_AVAILABLE:
+            priv, key_id = get_or_create_keypair(agent)
+            signature = sign(priv, agent, canonical_json(payload))
+        entry = store.append(agent, payload, signature=signature, key_id=key_id)
         _broadcast({"type": "entry", "data": _sanitize(entry)})
         results.append({"seq": entry["seq"], "source_id": agent})
     return {"seeded": len(results), "entries": results}
+
+
+@app.post("/demo/impersonate")
+async def demo_impersonate(request: Request):
+    """DEMO ONLY — attempt a forged-attribution event and show it rejected.
+
+    Signs a payload AS the victim using the attacker's own enrolled key, then runs
+    the exact check the /events ingest path runs (verify_signature). The registry
+    binds key→identity, so a key enrolled to one agent cannot sign as another."""
+    _require_auth(request)
+    if not DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled outside DEMO_MODE")
+    if not _SIGNING_AVAILABLE:
+        return {"available": False, "rejected": False, "reason": "Signing module unavailable"}
+    from ledger import canonical_json
+    attacker_sid, victim_sid = "nav-planner", "threat-classifier"
+    attacker_priv, attacker_kid = get_or_create_keypair(attacker_sid)
+    get_or_create_keypair(victim_sid)  # ensure victim is a real enrolled identity
+    payload = {"event_type": "roe_decision", "final_action": "ENGAGE",
+               "human_authorized": True, "note": "forged by adversary"}
+    canonical = canonical_json(payload)
+    # Forge: sign the message AS the victim, using the attacker's key.
+    forged_sig = sign(attacker_priv, victim_sid, canonical)
+    # The real ingest check — returns False because the key isn't enrolled to the victim.
+    accepted = verify_signature(forged_sig, attacker_kid, victim_sid, canonical)
+    return {
+        "available": True,
+        "attacker": attacker_sid,
+        "victim": victim_sid,
+        "attacker_key": attacker_kid,
+        "rejected": not accepted,
+        "reason": f"A key enrolled to '{attacker_sid}' cannot sign as '{victim_sid}'.",
+    }
 
 
 # ---------------------------------------------------------------------------
