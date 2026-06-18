@@ -26,7 +26,8 @@ components:
         # Generate a random API token Secret if one doesn't already exist.
         before:
           - cmd: |
-              ./zarf tools kubectl create namespace stable --dry-run=client -o yaml | ./zarf tools kubectl apply -f -
+              ./zarf tools kubectl get namespace stable >/dev/null 2>&1 || \
+                ./zarf tools kubectl create namespace stable
               ./zarf tools kubectl -n stable get secret stable-auth >/dev/null 2>&1 || \
                 ./zarf tools kubectl -n stable create secret generic stable-auth \
                   --from-literal=api-token="$(openssl rand -hex 32)"
