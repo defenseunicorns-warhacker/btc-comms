@@ -29,6 +29,10 @@ MOCK_CONFIRM_DELAY = int(os.getenv("MOCK_CONFIRM_DELAY", "30"))
 # Fake block height base so the demo looks realistic
 _MOCK_BLOCK_BASE = 895_000
 
+# When set, _stamp/_upgrade use the real OTS protocol against this calendar URL.
+# Point at the mock-calendar service for local dev, or a real OTS calendar for production.
+OTS_CALENDAR_URL = os.getenv("OTS_CALENDAR_URL", "").strip()
+
 
 # ---------------------------------------------------------------------------
 # Mock anchor (local demo — no Bitcoin network required)
@@ -69,76 +73,105 @@ def _upgrade_mock(proof_bytes: bytes, head_hash: str) -> tuple:
 
 
 # ---------------------------------------------------------------------------
-# OTS helpers (thin wrapper so tests can mock)
+# OTS helpers (production integration points — wire in the OTS client here)
 # ---------------------------------------------------------------------------
 
 def _stamp(hash_hex: str) -> Optional[bytes]:
     """
-    Submit hash_hex to the default OpenTimestamps calendars.
-    Returns the raw .ots proof bytes, or None on failure.
+    Submit hash_hex to an OTS calendar and return serialized proof bytes.
+
+    Uses OTS_CALENDAR_URL when set (point at the local mock-calendar service for dev,
+    or a real calendar such as https://alice.btc.calendar.opentimestamps.org for prod).
+    Returns None if OTS_CALENDAR_URL is unset or the submission fails — the loop
+    will retry on the next stamp interval.
+
+    Proof format stored in the DB:
+      {"ots": true, "v": 1, "digest": "<hex>", "calendar_url": "<url>", "timestamp_hex": "<hex>"}
     """
+    if not OTS_CALENDAR_URL:
+        log.warning("OTS stamp skipped — OTS_CALENDAR_URL not set (set MOCK_ANCHOR=true for simple demo)")
+        return None
+
     try:
-        import opentimestamps.core.op as ots_op
-        from opentimestamps.core.timestamp import DetachedTimestampFile, Timestamp
-        from opentimestamps.core.serialize import BytesSerializationContext
-        from opentimestamps.core.op import OpSHA256
-        import opentimestamps.client.args as ots_args
-        from opentimestamps.client.stamper import do_stamp
+        import httpx
+        from opentimestamps.core.timestamp import Timestamp
+        from opentimestamps.core.serialize import BytesSerializationContext, BytesDeserializationContext
 
-        hash_bytes = bytes.fromhex(hash_hex)
+        digest = bytes.fromhex(hash_hex)
+        resp = httpx.post(OTS_CALENDAR_URL, content=digest, timeout=10)
+        if resp.status_code != 200:
+            log.warning("Calendar POST %s returned HTTP %d", OTS_CALENDAR_URL, resp.status_code)
+            return None
 
-        # Build a DetachedTimestampFile wrapping the raw hash
-        # We use the "already-hashed" path so OTS doesn't re-hash
-        file_timestamp = DetachedTimestampFile(OpSHA256(), Timestamp(hash_bytes))
+        calendar_ts = Timestamp.deserialize(BytesDeserializationContext(resp.content), digest)
 
-        do_stamp([file_timestamp], use_default_calendars=True, calendars=None,
-                 m=1, timeout=10)
+        ctx = BytesSerializationContext()
+        calendar_ts.serialize(ctx)
 
-        buf = io.BytesIO()
-        ctx = BytesSerializationContext(buf)
-        file_timestamp.serialize(ctx)
-        return buf.getvalue()
+        proof = {
+            "ots": True,
+            "v": 1,
+            "digest": hash_hex,
+            "calendar_url": OTS_CALENDAR_URL,
+            "timestamp_hex": ctx.getbytes().hex(),
+        }
+        log.info("OTS stamp submitted for %s… (pending Bitcoin confirmation)", hash_hex[:16])
+        return json.dumps(proof).encode()
     except Exception as exc:
-        log.warning("OTS stamp failed: %s", exc)
+        log.warning("OTS stamp error: %s", exc)
         return None
 
 
 def _upgrade(proof_bytes: bytes, head_hash: str) -> tuple[Optional[bytes], bool, Optional[int], Optional[str]]:
     """
-    Try to upgrade a pending OTS proof by fetching attestations from calendars.
-
+    Poll the calendar for a confirmed Bitcoin attestation.
     Returns (new_proof_bytes, is_confirmed, block_height, block_time).
-    If not yet confirmed: (original_bytes, False, None, None).
     """
     try:
-        import io
-        from opentimestamps.core.serialize import (
-            BytesDeserializationContext, BytesSerializationContext
-        )
-        from opentimestamps.core.timestamp import DetachedTimestampFile
-        from opentimestamps.core.notary import BitcoinBlockHeaderAttestation
-        from opentimestamps.client.args import do_upgrade
-
-        ctx = BytesDeserializationContext(io.BytesIO(proof_bytes))
-        detached = DetachedTimestampFile.deserialize(ctx)
-
-        do_upgrade([detached], calendars=None, timeout=10, dry_run=False)
-
-        # Check for Bitcoin attestations
-        for msg, attestation in detached.timestamp.all_attestations():
-            if isinstance(attestation, BitcoinBlockHeaderAttestation):
-                block_height = attestation.height
-                block_time_str = None
-                # Serialize upgraded proof
-                buf = io.BytesIO()
-                sctx = BytesSerializationContext(buf)
-                detached.serialize(sctx)
-                return buf.getvalue(), True, block_height, block_time_str
-
-        # No Bitcoin attestation yet — return original bytes
+        proof = json.loads(proof_bytes)
+    except Exception:
         return proof_bytes, False, None, None
+
+    if not proof.get("ots"):
+        return proof_bytes, False, None, None
+
+    try:
+        import httpx
+        from opentimestamps.core.timestamp import Timestamp
+        from opentimestamps.core.notary import BitcoinBlockHeaderAttestation
+        from opentimestamps.core.serialize import BytesSerializationContext, BytesDeserializationContext
+
+        digest = bytes.fromhex(proof["digest"])
+        calendar_url = proof["calendar_url"]
+
+        ts = Timestamp.deserialize(
+            BytesDeserializationContext(bytes.fromhex(proof["timestamp_hex"])), digest
+        )
+
+        upgrade_url = f"{calendar_url}/timestamp/{digest.hex()}"
+        resp = httpx.get(upgrade_url, timeout=10)
+        if resp.status_code != 200:
+            log.debug("Calendar upgrade %s returned HTTP %d (not yet confirmed)", upgrade_url, resp.status_code)
+            return proof_bytes, False, None, None
+
+        upgraded_ts = Timestamp.deserialize(BytesDeserializationContext(resp.content), digest)
+        ts.merge(upgraded_ts)
+
+        for _msg, attestation in ts.all_attestations():
+            if isinstance(attestation, BitcoinBlockHeaderAttestation):
+                ctx = BytesSerializationContext()
+                ts.serialize(ctx)
+                proof["timestamp_hex"] = ctx.getbytes().hex()
+                log.info("OTS anchor confirmed at block %d", attestation.height)
+                return json.dumps(proof).encode(), True, attestation.height, None
+
+        # Updated proof bytes (may have additional partial attestations) but not yet confirmed
+        ctx = BytesSerializationContext()
+        ts.serialize(ctx)
+        proof["timestamp_hex"] = ctx.getbytes().hex()
+        return json.dumps(proof).encode(), False, None, None
     except Exception as exc:
-        log.warning("OTS upgrade failed: %s", exc)
+        log.warning("OTS upgrade error: %s", exc)
         return proof_bytes, False, None, None
 
 

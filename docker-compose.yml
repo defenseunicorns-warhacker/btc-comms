@@ -1,17 +1,30 @@
 services:
+  mock-calendar:
+    build: .
+    command: ["uvicorn", "src.mock_calendar:app", "--host", "0.0.0.0", "--port", "14900", "--log-level", "info"]
+    ports:
+      - "14900:14900"
+    environment:
+      MOCK_CONFIRM_DELAY: "30"     # seconds until a commitment "mines" a simulated block
+      MOCK_BLOCK_BASE: "895000"    # base block height for simulated confirmations
+      CALENDAR_URL: "http://mock-calendar:14900"  # embedded in PendingAttestation proofs
+    restart: unless-stopped
+
   accountability-layer:
     build: .
     ports:
-      - "8000:8000"
+      - "8100:8000"
     volumes:
       - ledger-data:/data
     environment:
       DEMO_MODE: "true"
-      MOCK_ANCHOR: "true"
-      MOCK_CONFIRM_DELAY: "30"   # seconds until anchor "confirms" locally
-      STAMP_INTERVAL: "20"        # stamp the head every 20s
-      UPGRADE_INTERVAL: "10"      # check for confirmation every 10s
+      OTS_CALENDAR_URL: "http://mock-calendar:14900"
+      MOCK_CONFIRM_DELAY: "30"   # must match mock-calendar's value
+      STAMP_INTERVAL: "20"       # stamp the ledger head every 20s
+      UPGRADE_INTERVAL: "10"     # poll for confirmation every 10s
       DB_PATH: /data/ledger.db
+    depends_on:
+      - mock-calendar
     restart: unless-stopped
 
 volumes:
