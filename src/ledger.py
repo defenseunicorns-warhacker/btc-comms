@@ -145,8 +145,8 @@ class LedgerStore:
                 "SELECT * FROM ledger WHERE seq=?", (next_seq,)
             ).fetchone())
 
-    def _insert_genesis(self):
-        payload = {"type": "genesis"}
+    def _insert_genesis(self, payload: Optional[dict] = None):
+        payload = payload or {"type": "genesis"}
         ph = payload_hash(payload)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         eh = entry_hash(0, ts, "system", ph, ZERO_HASH)
@@ -163,6 +163,67 @@ class LedgerStore:
             if count == 0:
                 self._insert_genesis()
                 self._conn.commit()
+
+    def reset(self):
+        """DEMO ONLY: wipe the ledger, anchors, and MMR, then re-seed genesis.
+        Lets the live demo be re-run from a clean state without restarting."""
+        with self._lock:
+            self._conn.execute("DELETE FROM ledger")
+            self._conn.execute("DELETE FROM anchors")
+            self._conn.execute("DELETE FROM mmr_nodes")
+            self._insert_genesis()
+            self._conn.commit()
+
+    def rebaseline(self, *, broken_at: int, reason: Optional[str],
+                   checkpoint_seq: int, checkpoint_hash: Optional[str],
+                   block_height: Optional[int]) -> dict:
+        """DEMO ONLY: recover from a confirmed tamper by sealing the compromised
+        chain as evidence and starting a fresh chain from the last clean,
+        Bitcoin-anchored checkpoint. The new genesis embeds that checkpoint so
+        the continuity from proven history is itself on the record."""
+        with self._lock:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS sealed_evidence (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sealed_at     TEXT NOT NULL,
+                    broken_at     INTEGER,
+                    reason        TEXT,
+                    checkpoint_seq   INTEGER,
+                    checkpoint_hash  TEXT,
+                    block_height  INTEGER,
+                    entries_json  TEXT,
+                    anchors_json  TEXT
+                )""")
+            entries = [self._row_to_dict(r) for r in
+                       self._conn.execute("SELECT * FROM ledger ORDER BY seq ASC").fetchall()]
+            anchors = [dict(r) for r in self._conn.execute(
+                "SELECT id, head_seq, head_hash, merkle_root, mmr_leaf_count, "
+                "created_at, status, block_height, block_time FROM anchors ORDER BY head_seq ASC"
+            ).fetchall()]
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            self._conn.execute(
+                "INSERT INTO sealed_evidence (sealed_at, broken_at, reason, checkpoint_seq, "
+                "checkpoint_hash, block_height, entries_json, anchors_json) VALUES (?,?,?,?,?,?,?,?)",
+                (ts, broken_at, reason, checkpoint_seq, checkpoint_hash, block_height,
+                 json.dumps(entries, default=str), json.dumps(anchors, default=str)),
+            )
+            # Start the fresh chain.
+            self._conn.execute("DELETE FROM ledger")
+            self._conn.execute("DELETE FROM anchors")
+            self._conn.execute("DELETE FROM mmr_nodes")
+            self._insert_genesis({
+                "type": "genesis",
+                "rebaselined": True,
+                "recovered_from_checkpoint_seq": checkpoint_seq,
+                "checkpoint_entry_hash": checkpoint_hash,
+                "bitcoin_block_height": block_height,
+                "prior_chain_break": {"broken_at": broken_at, "reason": reason},
+                "note": ("Prior chain sealed as evidence; this chain continues from the "
+                         "last Bitcoin-anchored clean state."),
+            })
+            self._conn.commit()
+            return self._row_to_dict(
+                self._conn.execute("SELECT * FROM ledger WHERE seq=0").fetchone())
 
     def get_all_entries(self) -> list[dict]:
         with self._lock:

@@ -14,4 +14,5 @@ keys/
 zarf-package-*.tar.zst
 *.tar.zst
 examples/agent_workspace/
+.idea/
 src/*.egg-info/

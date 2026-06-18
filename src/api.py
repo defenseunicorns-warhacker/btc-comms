@@ -63,6 +63,11 @@ def _flag(name: str, default: str = "false") -> bool:
 
 DEMO_MODE = _flag("DEMO_MODE")
 MOCK_ANCHOR = _flag("MOCK_ANCHOR")
+# When false, the background stamp/upgrade thread is not started — anchoring then
+# happens only via explicit POST /anchor/now and /anchor/upgrade. Used by the
+# visual demo so the "Anchor to Bitcoin" step is deterministic (no stale genesis
+# anchor created at startup). Defaults true to preserve normal behavior.
+AUTO_STAMP = _flag("AUTO_STAMP", "true")
 DB_PATH = os.getenv("DB_PATH", "ledger.db")
 STAMP_INTERVAL = int(os.getenv("STAMP_INTERVAL", "30"))
 UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "30"))
@@ -146,11 +151,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             stamp_interval=STAMP_INTERVAL,
             upgrade_interval=UPGRADE_INTERVAL,
         )
-    anchor_loop.start()
+    if AUTO_STAMP:
+        anchor_loop.start()
+    else:
+        log.info("AUTO_STAMP=false — background stamper not started; "
+                 "anchoring is manual via /anchor/now + /anchor/upgrade")
 
     yield
 
-    anchor_loop.stop()
+    if AUTO_STAMP:
+        anchor_loop.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +663,10 @@ async def anchor_now(request: Request):
 async def upgrade_anchors(request: Request):
     _require_auth(request)
     anchor_loop.upgrade_now()
+    # Broadcast updated anchor states so SSE clients see confirmed status.
+    # Use _anchor_out to strip the raw ots_proof bytes (not JSON-serializable).
+    for a in store.get_all_anchors():
+        _broadcast({"type": "anchor", "data": _anchor_out(a)})
     return {"message": "Upgrade pass triggered"}
 
 
@@ -684,6 +698,71 @@ async def tamper(req: TamperRequest, request: Request):
     store._tamper_entry(req.seq, req.field, req.new_value)
     _broadcast({"type": "tamper", "data": {"seq": req.seq, "field": req.field}})
     return {"ok": True, "tampered_seq": req.seq, "field": req.field}
+
+
+class DemoAppendRequest(BaseModel):
+    source_id: str
+    payload: dict
+
+
+@app.post("/demo/append", status_code=201)
+async def demo_append(req: DemoAppendRequest, request: Request):
+    """DEMO ONLY — append an event signed server-side with the agent's enrolled
+    key. In production each agent signs locally; the demo signs on its behalf so
+    the scenario exercises the real Ed25519 attribution path (and so post-break
+    entries stay individually attributable during recovery)."""
+    _require_auth(request)
+    if not DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled outside DEMO_MODE")
+    signature = key_id = None
+    if _SIGNING_AVAILABLE:
+        priv, key_id = get_or_create_keypair(req.source_id)
+        signature = sign(priv, req.source_id, canonical_json(req.payload))
+    entry = store.append(req.source_id, req.payload, signature=signature, key_id=key_id)
+    _broadcast({"type": "entry", "data": _sanitize(entry)})
+    return {"seq": entry["seq"], "entry_hash": entry["entry_hash"]}
+
+
+class RebaselineRequest(BaseModel):
+    broken_at: int
+    reason: str | None = None
+    checkpoint_seq: int
+    checkpoint_hash: str | None = None
+    block_height: int | None = None
+
+
+@app.post("/demo/rebaseline")
+async def demo_rebaseline(req: RebaselineRequest, request: Request):
+    """DEMO ONLY — the operator's recovery action after a confirmed tamper.
+
+    You do NOT fix a broken chain in place — that's just more tampering. Instead:
+    seal the compromised chain as forensic evidence, then start a fresh chain
+    whose genesis embeds the last clean Bitcoin-anchored checkpoint. New activity
+    chains and anchors forward from a state the attacker could not rewrite."""
+    _require_auth(request)
+    if not DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled outside DEMO_MODE")
+    genesis = store.rebaseline(
+        broken_at=req.broken_at, reason=req.reason,
+        checkpoint_seq=req.checkpoint_seq, checkpoint_hash=req.checkpoint_hash,
+        block_height=req.block_height,
+    )
+    # 'reset'-type event: clients re-fetch the (now fresh) chain and clear anchors.
+    _broadcast({"type": "reset", "data": {"ok": True, "rebaselined": True}})
+    return {"ok": True, "rebaselined": True, "checkpoint_seq": req.checkpoint_seq,
+            "genesis": _sanitize(genesis)}
+
+
+@app.post("/demo/reset")
+async def demo_reset(request: Request):
+    """DEMO ONLY — wipe the ledger back to genesis so the demo can re-run."""
+    _require_auth(request)
+    if not DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled outside DEMO_MODE")
+    store.reset()
+    anchor_loop.reset_tracking()
+    _broadcast({"type": "reset", "data": {"ok": True}})
+    return {"ok": True, "reset": True}
 
 
 @app.post("/seed")

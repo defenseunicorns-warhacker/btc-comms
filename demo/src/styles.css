@@ -1,0 +1,884 @@
+/* ============================================================================
+   STABLE visual explainer — design system
+   Dark, technical, minimal. Color is meaning.
+   ========================================================================== */
+
+:root {
+  --bg:         #080b12;
+  --surface:    #0f1319;
+  --surface-2:  #161c26;
+  --border:     #1e2633;
+  --text:       #e2e8f0;
+  --muted:      #4a5568;
+  --accent:     #3b82f6;
+  --danger:     #ef4444;
+  --success:    #22c55e;
+  --hash-color: #34d399;
+  --btc:        #f7931a;
+
+  --c-sensor:  #60a5fa;
+  --c-threat:  #f59e0b;
+  --c-nav:     #34d399;
+  --c-engage:  #a78bfa;
+
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto,
+          'Helvetica Neue', Arial, sans-serif;
+  --mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root { height: 100%; overflow: hidden; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.topbar {
+  height: 52px;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.brand {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text);
+}
+
+.progress-dots {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 1;
+}
+
+.pdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  transition: all 0.3s ease;
+}
+.pdot.cur {
+  background: var(--accent);
+  width: 20px;
+}
+.pdot.past {
+  background: var(--muted);
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.conn-dot.live { background: var(--success); }
+.conn-dot.off  { background: var(--danger); }
+
+.scene-header {
+  padding: 32px 48px 20px;
+  flex-shrink: 0;
+}
+
+.scene-n {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.scene-title {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.15;
+  margin-bottom: 8px;
+}
+
+.scene-sub {
+  font-size: 15px;
+  color: var(--muted);
+  max-width: 620px;
+  line-height: 1.55;
+}
+
+.scene-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 48px 140px;
+}
+
+/* ── Navigation ──────────────────────────────────────────────────────────── */
+
+.scene-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: linear-gradient(to top, var(--bg) 60%, transparent);
+  z-index: 10;
+}
+
+.nav-btn {
+  padding: 10px 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--sans);
+  transition: border-color 0.15s, color 0.15s;
+}
+.nav-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.nav-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.nav-btn.primary:hover:not(:disabled) {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+.nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ── Shared buttons ──────────────────────────────────────────────────────── */
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 24px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--sans);
+  transition: background 0.15s;
+}
+.btn-primary:hover:not(:disabled) { background: #2563eb; }
+.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--sans);
+  transition: color 0.15s, border-color 0.15s;
+}
+.btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+.btn-ghost.sm { padding: 4px 10px; font-size: 12px; }
+.btn-ghost:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 24px;
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--sans);
+  transition: background 0.15s;
+}
+.btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.2); }
+.btn-danger:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ── Scene 1: Stream ─────────────────────────────────────────────────────── */
+
+.s1-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding-top: 64px;
+  text-align: center;
+}
+
+.s1-idle-ring {
+  width: 72px;
+  height: 72px;
+  border: 2px dashed var(--border);
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.s1-idle-text {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 720px;
+}
+
+.entry-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-radius: 8px;
+  border-left: 3px solid var(--src-accent, var(--border));
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.ec-seq {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  width: 28px;
+  flex-shrink: 0;
+}
+
+.ec-body { flex: 1; }
+
+.ec-top {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 3px;
+}
+
+.ec-type {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  color: var(--src-accent, var(--accent));
+  text-transform: uppercase;
+}
+
+.ec-agent {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ec-time {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+  font-family: var(--mono);
+}
+
+.ec-desc {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.ec-hash {
+  font-size: 10px;
+  font-family: var(--mono);
+  color: var(--hash-color);
+  opacity: 0.6;
+  margin-top: 3px;
+}
+
+.s1-done {
+  margin-top: 20px;
+  padding: 12px 16px;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--success);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 720px;
+}
+
+/* ── Scene 2: Hash ───────────────────────────────────────────────────────── */
+
+.s2-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  max-width: 900px;
+  padding-top: 4px;
+}
+
+.s2-empty {
+  color: var(--muted);
+  padding: 48px 0;
+  font-size: 14px;
+}
+
+.s2-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.s2-hash-label-small {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--hash-color);
+  margin-bottom: 6px;
+}
+
+.s2-payload {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.s2-field {
+  display: flex;
+  gap: 12px;
+  padding: 7px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  border-radius: 4px;
+  transition: background 0.2s, border 0.2s;
+  border: 1px solid transparent;
+}
+
+.s2-field.changed {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.s2-key { color: var(--muted); flex-shrink: 0; }
+.s2-val { color: var(--text); word-break: break-all; }
+.s2-val.highlighted { color: var(--danger); font-weight: 600; }
+
+.s2-hash-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.s2-hash {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--hash-color);
+  word-break: break-all;
+  line-height: 1.7;
+  background: var(--surface);
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  min-height: 76px;
+}
+
+.s2-hash.alt {
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.s2-diff-note {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+  padding: 10px 14px;
+  background: rgba(239, 68, 68, 0.06);
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.15);
+}
+
+.hash-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  background: var(--hash-color);
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: blink 0.7s step-end infinite;
+}
+
+/* ── Scene 3: Chain ──────────────────────────────────────────────────────── */
+
+.s3-empty {
+  color: var(--muted);
+  padding: 48px 0;
+  font-size: 14px;
+}
+
+.s3-chain {
+  display: flex;
+  flex-direction: column;
+  max-width: 640px;
+}
+
+.s3-block {
+  padding: 12px 16px;
+  background: var(--surface);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  width: 100%;
+  transition: border-color 0.3s, background 0.3s;
+}
+
+.s3-block.tampered {
+  border-color: var(--danger);
+  background: rgba(239, 68, 68, 0.06);
+}
+
+.s3-block.broken {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.03);
+  opacity: 0.85;
+}
+
+.s3-block-top {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.s3-seq {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.s3-agent {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.s3-badge-tampered {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.12);
+  padding: 2px 7px;
+  border-radius: 3px;
+}
+
+.s3-badge-broken {
+  margin-left: auto;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  background: var(--surface-2);
+  padding: 2px 7px;
+  border-radius: 3px;
+}
+
+.s3-desc {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.s3-fp {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--hash-color);
+  margin-top: 5px;
+}
+.s3-fp.broken { color: var(--danger); }
+
+.s3-connector {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 0 0 0 20px;
+  height: 36px;
+}
+
+.s3-line {
+  width: 2px;
+  background: var(--border);
+  flex-shrink: 0;
+  transition: background 0.3s;
+  align-self: stretch;
+}
+.s3-line.broken-link { background: var(--danger); }
+
+.s3-prev {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  align-self: center;
+  white-space: nowrap;
+}
+.s3-prev.broken { color: var(--danger); }
+
+.s3-flag {
+  font-size: 11px;
+  color: var(--danger);
+  margin-top: 5px;
+}
+
+.s3-verdict {
+  margin-top: 20px;
+  padding: 12px 16px;
+  background: rgba(239, 68, 68, 0.07);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--danger);
+  max-width: 640px;
+}
+
+/* ── Scene 4: Sign ───────────────────────────────────────────────────────── */
+
+.s4-empty {
+  color: var(--muted);
+  padding: 48px 0;
+  font-size: 14px;
+}
+
+.s4-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+  max-width: 900px;
+  align-items: start;
+}
+
+.s4-entry {
+  padding: 18px;
+  background: var(--surface);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+
+.s4-entry-top {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.s4-entry-desc {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.s4-entry-fp {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--hash-color);
+  opacity: 0.7;
+}
+
+.s4-caption {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 400px;
+}
+
+.s4-crypto {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.s4-crypto-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.s4-crypto-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.s4-crypto-val {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--hash-color);
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.s4-rejection {
+  margin-top: 16px;
+  padding: 16px;
+  background: rgba(239, 68, 68, 0.07);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.s4-rejection-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+/* ── Scene 5: Anchor ─────────────────────────────────────────────────────── */
+
+.s5-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 28px;
+  padding-top: 8px;
+}
+
+.s5-leaves {
+  display: flex;
+  gap: 12px;
+}
+
+.s5-leaf {
+  padding: 8px 12px;
+  background: var(--surface);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--hash-color);
+  min-width: 100px;
+}
+
+.s5-leaf-placeholder {
+  opacity: 0.5;
+}
+
+.s5-leaf-seq {
+  font-size: 9px;
+  color: var(--muted);
+  margin-bottom: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.s5-tree-svg {
+  width: 480px;
+  height: 180px;
+}
+
+.s5-btc-block {
+  padding: 20px 32px;
+  background: rgba(247, 147, 26, 0.06);
+  border: 2px solid rgba(247, 147, 26, 0.25);
+  border-radius: 12px;
+  text-align: center;
+  transition: all 0.5s ease;
+  min-width: 280px;
+}
+
+.s5-btc-block.confirmed {
+  border-color: var(--btc);
+  background: rgba(247, 147, 26, 0.1);
+  box-shadow: 0 0 28px rgba(247, 147, 26, 0.12);
+}
+
+.s5-btc-block.pending {
+  border-color: rgba(247, 147, 26, 0.4);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.s5-btc-icon {
+  font-size: 28px;
+  margin-bottom: 6px;
+}
+
+.s5-btc-height {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--btc);
+}
+
+.s5-btc-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.s5-btc-hash {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--btc);
+  opacity: 0.7;
+  margin-top: 6px;
+}
+
+.s5-pre-note {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 520px;
+  line-height: 1.6;
+  margin-bottom: 16px;
+}
+
+.s5-confirmed-note {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 520px;
+  line-height: 1.6;
+  padding: 12px 16px;
+  background: rgba(247, 147, 26, 0.06);
+  border-radius: 8px;
+  border: 1px solid rgba(247, 147, 26, 0.15);
+}
+
+/* ── Call-to-action affordance ───────────────────────────────────────────── */
+/* In-scene action buttons "breathe" so they read as the thing to click, while
+   the Back/Next nav stays calm. */
+
+.cta { animation: cta-pulse-accent 2s ease-in-out infinite; }
+.btn-danger.cta { animation: cta-pulse-danger 2s ease-in-out infinite; }
+.cta:disabled { animation: none; }
+
+@keyframes cta-pulse-accent {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.0); }
+  50%      { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.16); }
+}
+@keyframes cta-pulse-danger {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.0); }
+  50%      { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.16); }
+}
+
+/* ── Scene 3: chain actions ──────────────────────────────────────────────── */
+
+.s3-actions {
+  margin-top: 24px;
+  max-width: 640px;
+}
+
+.s3-note {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+  margin-top: 12px;
+  max-width: 560px;
+}
+
+/* ── Scene 4: forge request/response transcript ──────────────────────────── */
+
+.s4-forge { margin-top: 20px; }
+
+.s4-forge-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 8px;
+  max-width: 400px;
+}
+
+.forge-log {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #0a0d14;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  line-height: 1.7;
+}
+
+.forge-req { color: var(--muted); }
+.forge-pending { color: var(--text); opacity: 0.8; }
+.forge-res {
+  color: var(--danger);
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+/* ── Scene 6: tamper finale ──────────────────────────────────────────────── */
+
+.s6-anchored-banner {
+  padding: 12px 16px;
+  background: rgba(247, 147, 26, 0.07);
+  border: 1px solid rgba(247, 147, 26, 0.2);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--btc);
+  max-width: 640px;
+}
+.s6-anchored-banner.muted {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.s6-btc-proof {
+  margin-top: 14px;
+  padding: 14px 16px;
+  background: rgba(247, 147, 26, 0.07);
+  border: 1px solid rgba(247, 147, 26, 0.25);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.6;
+  max-width: 640px;
+  /* Clear the fixed scene-nav when auto-scrolled into view after tampering. */
+  scroll-margin-bottom: 96px;
+}
+.s6-btc-proof strong { color: var(--btc); }
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
