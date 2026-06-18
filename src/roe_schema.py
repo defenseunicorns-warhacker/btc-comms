@@ -1,9 +1,24 @@
 """
-Rules of Engagement (ROE) structured event schema.
+EXAMPLE DOMAIN SCHEMA — Rules of Engagement (ROE) structured event payload.
 
-Defines the mandatory fields for AI decision events that must be
-legally interpretable by JAG officers and DCSA investigators.
-Plain JSON payloads are still accepted for non-ROE events.
+This is NOT a core system requirement. It is one example of how teams can
+define structured, typed payloads on top of STABLE's domain-agnostic ledger.
+The core system accepts any JSON payload; this schema adds field enforcement
+for a specific defense use case.
+
+----
+
+For high-stakes AI decisions — particularly in defense contexts — free-form log
+lines are insufficient. This schema shows how to structure event payloads so
+that a domain expert (e.g. a JAG officer or investigator) can interpret a record
+without engineering support.
+
+Adapt this pattern for your own domain:
+  - Swap "decision_type/roe_reference/weapon_system_id" for your domain's fields
+  - Keep "human_authorized, operator_id, ai_confidence, information_state" — they
+    are domain-agnostic accountability fields that apply to any supervised AI
+  - The _schema tag (e.g. "roe_decision_v1") is what validate_roe_payload() uses
+    to identify records that should be checked; plain payloads pass through untouched
 
 The schema captures:
   - WHAT was decided (decision_type, recommended_action)
@@ -12,7 +27,7 @@ The schema captures:
   - WHEN (latency from detection to authorization)
   - WHERE (geo_location)
   - WHICH rule applied (roe_reference)
-  - CONFIDENCE (ai_confidence — for accountability of autonomous assessments)
+  - CONFIDENCE (ai_confidence — the AI's own certainty, on record)
 
 Usage:
     from roe_schema import RoEDecision, build_roe_payload
@@ -42,21 +57,15 @@ from typing import Optional
 @dataclass
 class RoEDecision:
     """
-    A structured record of an AI-assisted or autonomous decision at a
-    Rules of Engagement gate. All fields are mandatory for JAG compliance.
+    Example structured payload for a defense ROE decision event.
 
-    decision_type:           What kind of gate this is.
-    human_authorized:        Was a human in the decision loop?
-    operator_id:             Identifier of the authorizing human (CAC in production).
-    target_id:               Identifier of the object/entity being acted upon.
-    ai_confidence:           AI's reported confidence (0–1) at decision time.
-    roe_reference:           The specific ROE rule invoked.
-    information_state:       Snapshot of sensor/intelligence data available to the AI.
-    time_to_authorization_ms: Latency from first detection to authorization decision.
-    geo_location:            {lat, lon, alt_m} of the event.
-    weapon_system_id:        Which system would execute the action.
-    recommended_action:      What the AI recommended.
-    final_action:            What was actually authorized/executed.
+    This is an example domain schema — replace these fields with whatever
+    your domain requires. The fields that transfer to any supervised AI use case:
+      human_authorized, operator_id, ai_confidence, information_state,
+      time_to_authorization_ms, recommended_action, final_action.
+
+    Defense-specific fields (substitute your own):
+      decision_type, roe_reference, target_id, geo_location, weapon_system_id.
     """
     decision_type: str             # ENGAGE_READY | HOLD_FIRE | ABORT | DESIGNATE_TARGET | TRACK_ONLY
     human_authorized: bool
@@ -80,8 +89,8 @@ class RoEDecision:
 @dataclass
 class RoEEngagementResult:
     """
-    Follow-up record after an engagement completes — closes the accountability loop.
-    Link back to the RoEDecision via decision_seq.
+    Example follow-up record after an engagement completes.
+    Closes the accountability loop back to the originating RoEDecision.
     """
     decision_seq: int       # seq of the originating RoEDecision entry
     target_id: str

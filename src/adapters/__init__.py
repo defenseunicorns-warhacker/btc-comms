@@ -5,7 +5,9 @@
 #   LedgerClient        — direct HTTP client, works from any language/service
 #   LedgerLogHandler    — drop-in Python logging.Handler (2-line integration)
 #   audit_log           — @audit_log decorator for individual functions
+#   InferenceLogger     — per-inference record with model tracking and input hashing
 
 from .client import LedgerClient
 from .logging_handler import LedgerLogHandler
 from .audit_decorator import audit_log
+from .inference_logger import InferenceLogger

@@ -89,9 +89,9 @@ it.**
 - **Not an app — a platform capability.** Deploy one recorder; every AI app on
   the cluster gets a tamper-evident, signed, Bitcoin-anchored record in two lines,
   by adoption rather than reimplementation. See
-  [UDS_CAPABILITY.md](UDS_CAPABILITY.md).
+  [DEPLOYMENT.md → STABLE as a shared UDS capability](DEPLOYMENT.md#stable-as-a-shared-uds-capability).
 - **Say:** "Accountability becomes something the platform provides, not something
-  each program rebuilds."
+  each program has to rebuild."
 
 ---
 
@@ -201,10 +201,10 @@ writer says it is.
    accountable." DoDD 3000.09 callout.
 3. **LIVE DEMO** — not a slide. Switch to the dashboard (see [DEMO.md](DEMO.md)).
    The red-banner tamper moment is the whole pitch.
-4. **Why it's real** — 160+ tests, DDIL, signed attribution, UDS air-gap package.
+4. **Why it's real** — 228+ tests, DDIL, signed attribution, UDS air-gap package.
 5. **The ask / vision** — STABLE as a **cluster-wide capability** every UDS app
-   adopts (see [UDS_CAPABILITY.md](UDS_CAPABILITY.md)); where it goes next (HSM
-   keys, recorder cluster, program-of-record path). What you want from the judges.
+   adopts (see [DEPLOYMENT.md → Shared UDS Capability](DEPLOYMENT.md#stable-as-a-shared-uds-capability));
+   where it goes next (HSM keys, recorder cluster, program-of-record path).
 
 ---
 

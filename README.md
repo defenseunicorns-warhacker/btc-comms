@@ -91,13 +91,12 @@ python3 examples/file_agent.py    # a file-writing agent; or llm_agent.py / ddil
 
 | Doc | What's in it |
 |---|---|
-| [docs/EXPLAINER.md](docs/EXPLAINER.md) | **Plain-English tour of the whole system** — fingerprints, leaves, the chain, signatures & key enrollment, the write-only recorder, stamping & Bitcoin (stamp vs. hash), verify, selective disclosure, DDIL, the ROE record, air-gap delivery, an end-to-end walkthrough, and an honest "what it does *not* do" |
-| [docs/WORK_STATEMENT.md](docs/WORK_STATEMENT.md) | **Requirement-by-requirement conformance** to the AI-accountability work statement — each requirement mapped to the mechanism and the code that implements it |
-| [docs/PITCH.md](docs/PITCH.md) | The pitch, scoring-criteria mapping, **mission impact** (DoDD 3000.09 / Responsible AI), and the "AI that tried to cover its tracks" scenario |
-| [docs/DEMO.md](docs/DEMO.md) | The rehearsed live-demo runbook + the runnable example apps |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it works — data model, hash chain, Merkle Mountain Range, Bitcoin anchor, signing, DDIL, the API, configuration, trust model |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Run locally / Docker / air-gapped Kubernetes (UDS / Zarf), tests, hardening |
-| [docs/UDS_CAPABILITY.md](docs/UDS_CAPABILITY.md) | STABLE as a **shared cluster capability** any UDS app opts into — deploy one recorder, every AI app gets a tamper-evident record in two lines |
+| [docs/EXPLAINER.md](docs/EXPLAINER.md) | Plain-English tour for non-technical audiences — fingerprints, the chain, signatures, Bitcoin stamping, selective disclosure, DDIL, and an honest "what it doesn't do" |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Engineering reference — data model, hash chain, MMR, Bitcoin anchor, signing, proof-of-processing bridge, API, configuration, trust model |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Run locally / Docker / air-gapped Kubernetes (UDS / Zarf), tests, hardening, and STABLE as a shared cluster capability |
+| [docs/WORK_STATEMENT.md](docs/WORK_STATEMENT.md) | Requirement-by-requirement conformance to the AI-accountability work statement |
+| [docs/PITCH.md](docs/PITCH.md) | Pitch prep — 30-second version, scoring criteria, DoDD 3000.09 mapping, the "AI that tried to cover its tracks" scenario, judge Q&A |
+| [docs/DEMO.md](docs/DEMO.md) | Rehearsed live-demo runbook + runnable example apps (file agent, LLM agent, DDIL demo) |
 
 ---
 

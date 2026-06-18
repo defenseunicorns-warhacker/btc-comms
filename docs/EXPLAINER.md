@@ -123,9 +123,58 @@ branch — **without showing any of the other events.** (More in Part 5.)
 > works offline; the **tree** squeezes everything into *one fingerprint* that's cheap to
 > witness on Bitcoin and lets you prove single events. You get both at once.
 
-*(The real system uses an efficient version of the tree called a "Merkle Mountain
-Range" so it can keep adding events without rebuilding the whole bracket each time. The
-idea is identical — events at the bottom, one root at the top.)*
+### A closer look — why it's a "Merkle Mountain Range"
+
+*(Optional deep-dive. If you just need the idea, it's the line above: events at the
+bottom, one root at the top. This explains how that tree keeps up as events pour in
+without ever rebuilding — the part the engineers are proudest of.)*
+
+A normal tournament bracket assumes you have **all** the players before it starts. But
+your ledger grows **one event at a time, forever** — so rebuilding the whole bracket on
+every new event would mean re-fingerprinting the entire history each time. With millions
+of events, that's far too slow.
+
+A **Merkle Mountain Range** is the fix. Instead of forcing everything into one perfectly
+balanced tree, it keeps **several smaller perfect trees side by side** — a big one, a
+medium one, a small one. Lined up tallest-to-shortest, their tops look like a **mountain
+range on the horizon.** That's the name.
+
+The neat rule: **the mountains you have always match the 1s in your event count written
+in binary.** Your demo ledger has **11 entries**, and 11 in binary is **1011** = 8 + 2 + 1
+— so it's literally three mountains: one covering 8 events, one covering 2, and a lone 1:
+
+```
+            ●  big mountain (events 1–8)
+          /   \
+        ●       ●
+       / \     / \
+      ●   ●   ●   ●
+     /\ /\   /\ /\
+    1 2 3 4 5 6 7 8       ●  hill (9–10)      ● pebble (11)
+                         / \                  │
+                        9  10                11
+```
+
+**Adding an event is just like adding 1 to that binary number.** A new event arrives as a
+lone "pebble." If there's already a pebble next to it, the two **merge** into a hill; if
+that makes two equal hills, they merge into a bigger mountain — exactly like the "carry"
+when you add 1 in arithmetic.
+
+Watch the ledger go from 11 → 12 (binary `1011` → `1100`):
+
+1. Add event 12 (a pebble). Event 11 is already a pebble → **merge** into a hill (11–12).
+2. Now there are two hills (9–10 and 11–12) → **merge** into a mountain of 4 (9–12).
+3. Done: an 8-mountain (1–8) and a 4-mountain (9–12) — that's `1100`, which is 12. ✓
+
+That was **two merges**, not twelve re-fingerprints. Adding an event is always just a few
+steps, no matter how big the ledger grows — and **no past event ever moves**, which is
+exactly what you want for a permanent record.
+
+To get the single **root** fingerprint (the one stamped to Bitcoin in Part 4), you simply
+**combine the mountain tops together** — informally, "bagging the peaks." And to prove one
+event is in the ledger, you reveal the short path up *its* mountain plus the other peaks —
+a handful of fingerprints, even against millions of events. That's the selective
+disclosure from Part 5, and a big part of why the whole thing scales.
 
 ---
 
@@ -312,24 +361,29 @@ is reordered. Like a field radio that records into a notepad when the signal dro
 sends the backlog the instant it reconnects. (Agents can also report how many events are
 waiting, so a dashboard shows their status live.)
 
-## Decisions a lawyer can read — the ROE record
+## Structured decision records *(example domain application)*
 
-For the highest-stakes events — engagement decisions — plain free-text isn't enough. The
-system has a **standardized Rules-of-Engagement (ROE) form** a JAG officer or investigator
-can read **without an engineer.** Each ROE decision record captures:
+The ledger accepts any JSON payload, but for high-stakes decisions plain free-text often
+isn't enough. You want structured fields so a domain expert — not just an engineer — can
+read the record and immediately understand what happened.
+
+The system ships with an **example schema for defense Rules-of-Engagement decisions** to
+show what this looks like in practice. Each record captures:
 
 - **What** was decided (e.g. "engage-ready," "hold fire") and what the AI *recommended* vs.
   what was actually *authorized*
 - **Who** authorized it — and whether a human was in the loop at all (or it ran unattended)
 - **What the AI knew** at that moment (the sensor/intel snapshot)
-- **Which ROE rule** applied, and the AI's **confidence**
-- **How fast** — the time from first detection to authorization
-- **Where**, which weapon system, and optional extras like a collateral-damage estimate or
-  a JAG pre-authorization reference
+- **How confident** the AI was, and **how fast** the decision happened
+- Domain-specific fields: which rule applied, location, weapon system, etc.
 
-There's also a **follow-up "what happened" record** that links back to the decision and
-closes the loop (outcome, battle-damage assessment, whether collateral was confirmed). So
-you can reconstruct not just the decision, but its consequences — all tamper-evident.
+There's also a follow-up record that links back to the decision and records the outcome —
+so you can reconstruct not just the decision but its consequences, all tamper-evident.
+
+*This schema is a starting point, not a requirement. Swap the defense-specific fields for
+whatever your domain needs — medical AI decisions, autonomous logistics, financial
+approvals. The core fields (who authorized, what the AI knew, AI confidence) apply to any
+supervised AI system.*
 
 ## How an existing app plugs in — three ways, all tiny
 
@@ -449,6 +503,6 @@ Being straight about the limits is part of the design:
 | **Verify** | Re-checking the whole record (fingerprints, chain, signatures, receipts) and naming any altered entry. |
 | **Selective disclosure** | Proving one event is genuine without revealing any of the others. |
 | **DDIL** | Denied/Degraded/Intermittent/Limited comms — the system buffers locally and flushes in order. |
-| **ROE record** | A standardized engagement-decision form a JAG officer can read without an engineer. |
+| **ROE record** | Example domain schema — a structured decision-event form for defense use cases; swap the fields for your domain. |
 | **Tamper-evident (vs. tamper-proof)** | You can always *detect* a change afterward — though you can't stop a lie from being written in the first place. |
 | **Air-gap / UDS bundle / Zarf** | A self-contained package that installs into a disconnected, classified network. |
