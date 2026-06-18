@@ -60,6 +60,11 @@ def _flag(name: str, default: str = "false") -> bool:
 
 DEMO_MODE = _flag("DEMO_MODE")
 MOCK_ANCHOR = _flag("MOCK_ANCHOR")
+# When false, the background stamp/upgrade thread is not started — anchoring then
+# happens only via explicit POST /anchor/now and /anchor/upgrade. Used by the
+# visual demo so the "Anchor to Bitcoin" step is deterministic (no stale genesis
+# anchor created at startup). Defaults true to preserve normal behavior.
+AUTO_STAMP = _flag("AUTO_STAMP", "true")
 DB_PATH = os.getenv("DB_PATH", "ledger.db")
 STAMP_INTERVAL = int(os.getenv("STAMP_INTERVAL", "30"))
 UPGRADE_INTERVAL = int(os.getenv("UPGRADE_INTERVAL", "30"))
@@ -143,11 +148,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             stamp_interval=STAMP_INTERVAL,
             upgrade_interval=UPGRADE_INTERVAL,
         )
-    anchor_loop.start()
+    if AUTO_STAMP:
+        anchor_loop.start()
+    else:
+        log.info("AUTO_STAMP=false — background stamper not started; "
+                 "anchoring is manual via /anchor/now + /anchor/upgrade")
 
     yield
 
-    anchor_loop.stop()
+    if AUTO_STAMP:
+        anchor_loop.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -440,8 +450,9 @@ async def upgrade_anchors(request: Request):
     _require_auth(request)
     anchor_loop.upgrade_now()
     # Broadcast updated anchor states so SSE clients see confirmed status.
+    # Use _anchor_out to strip the raw ots_proof bytes (not JSON-serializable).
     for a in store.get_all_anchors():
-        _broadcast({"type": "anchor", "data": a})
+        _broadcast({"type": "anchor", "data": _anchor_out(a)})
     return {"message": "Upgrade pass triggered"}
 
 
@@ -535,6 +546,7 @@ async def demo_reset(request: Request):
     if not DEMO_MODE:
         raise HTTPException(status_code=403, detail="Disabled outside DEMO_MODE")
     store.reset()
+    anchor_loop.reset_tracking()
     _broadcast({"type": "reset", "data": {"ok": True}})
     return {"ok": True, "reset": True}
 

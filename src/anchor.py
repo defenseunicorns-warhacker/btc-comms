@@ -184,6 +184,12 @@ class AnchorLoop:
         """Immediately attempt upgrades on all pending anchors."""
         self._do_upgrades()
 
+    def reset_tracking(self):
+        """Forget the last-stamped seq so a wiped ledger can be re-stamped from
+        scratch. Without this, after a demo reset the head seq collides with the
+        previous run's stamped seq and stamp_now() becomes a no-op."""
+        self._last_stamped_seq = None
+
     # ------------------------------------------------------------------
 
     def _run(self):

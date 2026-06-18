@@ -1,219 +1,197 @@
-import { useState, useCallback, useMemo } from 'react'
+import { useState, useCallback } from 'react'
 import { useStable } from './useStable'
 import { api } from './api'
 import { SCRIPT, DAMNING_SEQ, FORGED_PAYLOAD } from './scenario'
-import MonitoringView from './components/MonitoringView'
-import InvestigationView from './components/InvestigationView'
-import AlarmBanner from './components/AlarmBanner'
-import DemoControls from './components/DemoControls'
-import ProofModal from './components/ProofModal'
+import S1_Stream from './components/scenes/S1_Stream'
+import S2_Hash from './components/scenes/S2_Hash'
+import S3_Chain from './components/scenes/S3_Chain'
+import S4_Sign from './components/scenes/S4_Sign'
+import S5_Anchor from './components/scenes/S5_Anchor'
+import S6_Tamper from './components/scenes/S6_Tamper'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+const SCENES = [
+  {
+    title: 'Every decision is recorded',
+    sub: 'Each action the autonomous system takes is written to an append-only ledger — in sequence, the instant it happens.',
+  },
+  {
+    title: 'Each entry gets a fingerprint',
+    sub: 'A cryptographic hash is a fingerprint of the data. Change one character anywhere — the fingerprint is unrecognizable.',
+  },
+  {
+    title: 'Entries chain together',
+    sub: "Each entry's fingerprint is baked into the next, linking them in order. This is what makes the records tamper-evident.",
+  },
+  {
+    title: 'Every agent signs its work',
+    sub: "Each decision is signed with a private key only that agent holds. Attribution is cryptographic — not a label you can overwrite.",
+  },
+  {
+    title: 'Bitcoin locks the chain in time',
+    sub: "The chain's fingerprint is published to the Bitcoin blockchain. Once confirmed, no authority on earth can rewrite it.",
+  },
+  {
+    title: "Tampering can't hide",
+    sub: 'Now watch an adversary alter a record. Because the original chain’s fingerprint is already locked in Bitcoin, the change is mathematically provable — and instantly detected.',
+  },
+]
+
 export default function App() {
-  const { entries, anchors, verify, connected, confirmedThrough } = useStable()
+  const { entries, anchors, verify, connected } = useStable()
 
-  const [view, setView] = useState('monitor')         // 'monitor' | 'investigate'
-  const [selectedSeq, setSelectedSeq] = useState(null)
-  const [proof, setProof] = useState(null)
-  const [brokenAt, setBrokenAt] = useState(null)       // local, for instant break
-  const [acknowledged, setAcknowledged] = useState(false)
-  const [agentStates, setAgentStates] = useState({})
+  const [scene, setScene] = useState(0)
   const [busy, setBusy] = useState(false)
-  const [lastAction, setLastAction] = useState(null)
-  const [toasts, setToasts] = useState([])
+  const [brokenAt, setBrokenAt] = useState(null)
+  const [forgeResult, setForgeResult] = useState(null)
 
-  // verify() is the source of truth, so a mid-demo reload still shows the break.
   const effectiveBrokenAt = brokenAt ?? (verify && !verify.ok ? verify.broken_at : null)
-  const breached = effectiveBrokenAt != null
 
-  const toast = useCallback((kind, tt, tb) => {
-    const id = Math.random()
-    setToasts((t) => [...t, { id, kind, tt, tb }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 7000)
-  }, [])
-
-  // ── Simulation handlers (the only things that touch the recorder) ──────────
-  async function fireEvent(ev) {
-    setAgentStates((s) => ({ ...s, [ev.agent]: { status: ev.status, firing: true } }))
-    await api.appendEvent(ev.agent, ev.payload).catch(() => {})
-    await sleep(140)
-    setAgentStates((s) => ({ ...s, [ev.agent]: { status: ev.status, firing: false } }))
-    await sleep(300)
-  }
-
-  async function waitForCheckpoint(minSeq) {
-    await api.anchorNow().catch(() => {})
-    for (let i = 0; i < 10; i++) {
-      await sleep(2000)
-      await api.upgradeAnchors().catch(() => {})
-      const fresh = await api.anchors().catch(() => [])
-      if (fresh.some((a) => a.status === 'confirmed' && a.head_seq >= minSeq)) return true
-    }
-    return false
-  }
-
-  async function runEngagement() {
-    setBusy(true); setLastAction('Recording counter-UAS engagement…')
+  const fireEngagement = useCallback(async () => {
+    if (entries.length > 1) return
+    setBusy(true)
     try {
-      // Records #1–6: the lead-up, before the autonomous engagement decision.
-      for (const ev of SCRIPT.filter((e) => e.seq <= 6)) await fireEvent(ev)
-      // Lock a Bitcoin checkpoint here — this is the clean, externally-proven
-      // ground truth a tamper at #7 cannot reach back and rewrite.
-      setLastAction('Checkpoint: anchoring records #0–6 into Bitcoin…')
-      await waitForCheckpoint(6)
-      setLastAction('Checkpoint #6 locked in Bitcoin. Continuing engagement…')
-      // Records #7–9: the autonomous engagement and aftermath.
-      for (const ev of SCRIPT.filter((e) => e.seq >= 7)) await fireEvent(ev)
-      await api.verify().catch(() => {})
-      setLastAction('9 decisions recorded — signed, chained, checkpoint #6 in Bitcoin.')
-    } finally { setBusy(false) }
-  }
+      for (const ev of SCRIPT) {
+        await api.appendEvent(ev.agent, ev.payload).catch(() => {})
+        await sleep(600)
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [entries.length])
 
-  async function injectTamper() {
-    setBusy(true); setLastAction('Adversary rewriting record #7…')
+  const injectTamper = useCallback(async () => {
+    setBusy(true)
     try {
       setBrokenAt(DAMNING_SEQ)
-      setAcknowledged(false)
       await api.tamper(DAMNING_SEQ, FORGED_PAYLOAD).catch(() => {})
-      await sleep(450)
-      await api.verify().catch(() => {})   // detection fires from the fresh result
-      setLastAction('Record #7 altered — watch the monitor.')
-    } finally { setBusy(false) }
-  }
-
-  // The last confirmed Bitcoin anchor BEFORE the break — the clean checkpoint
-  // verify() can't surface itself (it halts at broken_at), so we read it from
-  // the anchors the attacker couldn't reach back and invalidate.
-  const checkpoint = useMemo(() => {
-    const clean = anchors.filter(
-      (a) => a.status === 'confirmed' &&
-        (effectiveBrokenAt == null || a.head_seq < effectiveBrokenAt))
-    if (!clean.length) return null
-    return clean.reduce((best, a) => (a.head_seq > best.head_seq ? a : best))
-  }, [anchors, effectiveBrokenAt])
-
-  // Operator's recovery action: don't fix the chain in place — seal it as
-  // evidence and re-baseline a fresh chain from the last clean Bitcoin checkpoint.
-  async function rebaselineRecord() {
-    if (!checkpoint) return
-    setBusy(true); setLastAction('Sealing compromised chain · re-baselining from checkpoint…')
-    try {
-      await api.rebaseline({
-        broken_at: effectiveBrokenAt,
-        reason: verify?.reason,
-        checkpoint_seq: checkpoint.head_seq,
-        checkpoint_hash: checkpoint.head_hash,
-        block_height: checkpoint.block_height ?? null,
-      }).catch(() => {})
-      await sleep(300)
+      await sleep(400)
       await api.verify().catch(() => {})
-      setBrokenAt(null); setAcknowledged(true); setAgentStates({})
-      setView('monitor')
-      const blk = checkpoint.block_height
-      setLastAction(`Re-baselined from checkpoint #${checkpoint.head_seq}${blk ? ` · Bitcoin block ${blk.toLocaleString()}` : ''}.`)
-      toast('good', '✓ Re-baselined from clean checkpoint',
-        `Compromised chain sealed as evidence. New chain continues from record #${checkpoint.head_seq}${blk ? `, anchored in Bitcoin block ${blk.toLocaleString()}` : ''} — a state the attacker could not rewrite.`)
-    } finally { setBusy(false) }
-  }
+    } finally {
+      setBusy(false)
+    }
+  }, [])
 
-  async function reset() {
+  const tryForge = useCallback(async () => {
+    setBusy(true)
+    try {
+      const r = await api.impersonate().catch(() => null)
+      setForgeResult(r || { error: true })
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const fireAnchor = useCallback(async () => {
+    setBusy(true)
+    try {
+      await api.anchorNow().catch(() => {})
+      for (let i = 0; i < 15; i++) {
+        await sleep(2000)
+        await api.upgradeAnchors().catch(() => {})
+        const fresh = await api.anchors().catch(() => [])
+        if (fresh.some((a) => a.status === 'confirmed')) break
+      }
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  const reset = useCallback(async () => {
     setBusy(true)
     try {
       await api.reset().catch(() => {})
-      setBrokenAt(null); setAcknowledged(false); setSelectedSeq(null)
-      setProof(null); setAgentStates({}); setLastAction('Ledger reset to genesis.')
-    } finally { setBusy(false) }
-  }
-
-  async function tryImpersonate() {
-    const r = await api.impersonate().catch(() => null)
-    if (!r) { toast('blocked', '⚠ Unavailable', 'Impersonation endpoint needs DEMO_MODE.'); return }
-    if (r.rejected) {
-      toast('blocked', '✕ Forged signature rejected',
-        `${r.reason} Attribution is cryptographic — not a label an attacker can type.`)
-      setLastAction('Signature forgery rejected at ingest.')
-    } else {
-      toast('blocked', '⚠ Unexpected', r.reason || 'not blocked')
+      setBrokenAt(null)
+      setForgeResult(null)
+      setScene(0)
+    } finally {
+      setBusy(false)
     }
-  }
-
-  const openProof = useCallback(async (seq) => {
-    const r = await api.proof(seq).catch(() => null)
-    if (r) setProof(r)
   }, [])
 
-  const investigate = useCallback((seq) => {
-    setSelectedSeq(seq); setView('investigate'); setAcknowledged(true)
-  }, [])
-
-  const brokenEntry = useMemo(
-    () => entries.find((e) => e.seq === effectiveBrokenAt) || null,
-    [entries, effectiveBrokenAt])
+  const n = SCENES.length
+  const num = String(scene + 1).padStart(2, '0')
+  const total = String(n).padStart(2, '0')
 
   return (
     <div className="app">
       <div className="topbar">
-        <div className="brand">STABLE<span className="sub">accountability for autonomous systems</span></div>
-        <div className="tabs">
-          <button className={`tab ${view === 'monitor' ? 'on' : ''}`} onClick={() => setView('monitor')}>
-            <span className="tab-dot live" /> Live Monitoring
-          </button>
-          <button className={`tab ${view === 'investigate' ? 'on' : ''}`} onClick={() => setView('investigate')}>
-            ⚖ Investigation
+        <div className="brand">STABLE</div>
+        <div className="progress-dots">
+          {SCENES.map((_, i) => (
+            <div
+              key={i}
+              className={`pdot ${i === scene ? 'cur' : i < scene ? 'past' : ''}`}
+            />
+          ))}
+        </div>
+        <div className="topbar-right">
+          <span className={`conn-dot ${connected ? 'live' : 'off'}`} />
+          <button className="btn-ghost sm" onClick={reset} disabled={busy}>
+            Reset
           </button>
         </div>
-        <div className="spacer" />
-        <span className="chip"><span className={`dot ${connected ? 'live' : 'off'}`} /> {connected ? 'recorder live' : 'reconnecting…'}</span>
       </div>
 
-      {breached && !acknowledged && (
-        <AlarmBanner
-          brokenAt={effectiveBrokenAt}
-          entry={brokenEntry}
-          reason={verify?.reason}
-          checkpoint={checkpoint}
-          onInvestigate={() => investigate(effectiveBrokenAt)}
-          onDismiss={() => setAcknowledged(true)}
-        />
-      )}
+      <div className="scene-header">
+        <div className="scene-n">{num} / {total}</div>
+        <h1 className="scene-title">{SCENES[scene].title}</h1>
+        <p className="scene-sub">{SCENES[scene].sub}</p>
+      </div>
 
-      <div className="view">
-        {view === 'monitor' ? (
-          <MonitoringView
-            entries={entries} anchors={anchors} verify={verify}
-            agentStates={agentStates} brokenAt={effectiveBrokenAt}
-            confirmedThrough={confirmedThrough} onSelect={openProof}
-            busy={busy} checkpoint={checkpoint} reason={verify?.reason}
-            onRebaseline={rebaselineRecord}
-            onInvestigate={() => investigate(effectiveBrokenAt)}
+      <div className="scene-body">
+        {scene === 0 && (
+          <S1_Stream entries={entries} busy={busy} onStart={fireEngagement} />
+        )}
+        {scene === 1 && (
+          <S2_Hash entries={entries} />
+        )}
+        {scene === 2 && (
+          <S3_Chain entries={entries} />
+        )}
+        {scene === 3 && (
+          <S4_Sign
+            entries={entries}
+            busy={busy}
+            forgeResult={forgeResult}
+            onForge={tryForge}
           />
-        ) : (
-          <InvestigationView
-            entries={entries} verify={verify} anchors={anchors}
-            brokenAt={effectiveBrokenAt} confirmedThrough={confirmedThrough}
-            selectedSeq={selectedSeq} onSelectSeq={setSelectedSeq}
-            onVerify={() => api.verify().catch(() => {})} onProof={openProof}
+        )}
+        {scene === 4 && (
+          <S5_Anchor
+            entries={entries}
+            anchors={anchors}
+            busy={busy}
+            onAnchor={fireAnchor}
+          />
+        )}
+        {scene === 5 && (
+          <S6_Tamper
+            entries={entries}
+            brokenAt={effectiveBrokenAt}
+            busy={busy}
+            injectTamper={injectTamper}
+            anchor={anchors.find((a) => a.status === 'confirmed')}
           />
         )}
       </div>
 
-      <DemoControls
-        busy={busy} hasRun={entries.length > 1} breached={breached}
-        lastAction={lastAction}
-        onRun={runEngagement} onTamper={injectTamper}
-        onImpersonate={tryImpersonate} onReset={reset}
-      />
-
-      <ProofModal result={proof} onClose={() => setProof(null)} />
-
-      <div className="toasts">
-        {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`}>
-            <div className="tt">{t.tt}</div>
-            <div className="tb">{t.tb}</div>
-          </div>
-        ))}
+      <div className="scene-nav">
+        <button
+          className="nav-btn"
+          onClick={() => setScene((s) => s - 1)}
+          disabled={scene === 0 || busy}
+        >
+          ← Back
+        </button>
+        <button
+          className="nav-btn primary"
+          onClick={() => setScene((s) => s + 1)}
+          disabled={scene === n - 1 || busy}
+        >
+          Next →
+        </button>
       </div>
     </div>
   )
